@@ -2,9 +2,13 @@
 
 import json
 import os
+import sqlite3
 from datetime import datetime
+from pathlib import Path
 
-PORTFOLIO_FILE = os.path.join(os.path.dirname(__file__), "portfolio.json")
+BASE_DIR = Path(__file__).resolve().parent
+PORTFOLIO_FILE = BASE_DIR / "portfolio.json"
+PORTFOLIO_DB_FILE = Path(os.environ.get("PORTFOLIO_DB_FILE", BASE_DIR / "portfolio.db"))
 
 # 常见股票行业映射（code -> industry）
 _INDUSTRY_MAP = {
@@ -57,34 +61,152 @@ def detect_industry(code: str, name: str = "") -> str:
     return "其他"
 
 
+def _connect() -> sqlite3.Connection:
+    """连接本地持仓数据库"""
+    conn = sqlite3.connect(PORTFOLIO_DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _init_db(conn: sqlite3.Connection):
+    """初始化数据库结构"""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS holdings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            market TEXT NOT NULL,
+            name TEXT NOT NULL,
+            code TEXT NOT NULL,
+            cost_price REAL NOT NULL,
+            shares INTEGER NOT NULL,
+            currency TEXT NOT NULL,
+            industry TEXT NOT NULL DEFAULT '其他',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+
+
+def _get_metadata(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM metadata WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def _set_metadata(conn: sqlite3.Connection, key: str, value: str):
+    conn.execute(
+        """
+        INSERT INTO metadata (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (key, value),
+    )
+
+
+def _insert_holding(conn: sqlite3.Connection, holding: dict):
+    now = datetime.now().isoformat(timespec="seconds")
+    code = str(holding.get("code", "")).strip()
+    name = str(holding.get("name", "")).strip()
+    currency_map = {"A": "CNY", "HK": "HKD", "US": "USD"}
+    market = str(holding.get("market", "A")).strip()
+    conn.execute(
+        """
+        INSERT INTO holdings
+            (market, name, code, cost_price, shares, currency, industry, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            market,
+            name,
+            code,
+            float(holding.get("cost_price", 0)),
+            int(holding.get("shares", 0)),
+            str(holding.get("currency") or currency_map.get(market, "CNY")),
+            str(holding.get("industry") or detect_industry(code, name)),
+            now,
+            now,
+        ),
+    )
+
+
+def migrate_json_to_db() -> int:
+    """把本地 portfolio.json 导入 SQLite，返回导入条数"""
+    if not PORTFOLIO_FILE.exists():
+        return 0
+
+    with _connect() as conn:
+        _init_db(conn)
+        if _get_metadata(conn, "json_migrated") == "1":
+            return 0
+
+        with PORTFOLIO_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        holdings = data.get("holdings", [])
+        existing_count = conn.execute("SELECT COUNT(*) AS count FROM holdings").fetchone()["count"]
+        imported_count = 0
+        if existing_count == 0:
+            for holding in holdings:
+                _insert_holding(conn, holding)
+                imported_count += 1
+
+        _set_metadata(conn, "json_migrated", "1")
+        conn.commit()
+        return imported_count
+
+
+def ensure_storage_ready():
+    """确保数据库存在，并在首次运行时从 JSON 迁移"""
+    with _connect() as conn:
+        _init_db(conn)
+    migrate_json_to_db()
+
+
 def load_portfolio() -> dict:
     """加载持仓数据"""
-    if not os.path.exists(PORTFOLIO_FILE):
-        return {"holdings": []}
-    with open(PORTFOLIO_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    ensure_storage_ready()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT market, name, code, cost_price, shares, currency, industry
+            FROM holdings
+            ORDER BY id
+            """
+        ).fetchall()
+    return {"holdings": [dict(row) for row in rows]}
 
 
 def save_portfolio(data: dict):
     """保存持仓数据"""
-    with open(PORTFOLIO_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    ensure_storage_ready()
+    with _connect() as conn:
+        conn.execute("DELETE FROM holdings")
+        for holding in data.get("holdings", []):
+            _insert_holding(conn, holding)
+        conn.commit()
 
 
 def add_holding(market: str, name: str, code: str, cost_price: float, shares: int):
     """添加持仓"""
-    data = load_portfolio()
     currency_map = {"A": "CNY", "HK": "HKD", "US": "USD"}
-    data["holdings"].append({
-        "market": market,
-        "name": name,
-        "code": code.strip(),
-        "cost_price": cost_price,
-        "shares": shares,
-        "currency": currency_map.get(market, "CNY"),
-        "industry": detect_industry(code, name),
-    })
-    save_portfolio(data)
+    ensure_storage_ready()
+    with _connect() as conn:
+        _insert_holding(conn, {
+            "market": market,
+            "name": name,
+            "code": code.strip(),
+            "cost_price": cost_price,
+            "shares": shares,
+            "currency": currency_map.get(market, "CNY"),
+            "industry": detect_industry(code, name),
+        })
+        conn.commit()
 
 
 def ensure_industry_fields():
@@ -102,10 +224,15 @@ def ensure_industry_fields():
 
 def remove_holding(index: int):
     """删除持仓"""
-    data = load_portfolio()
-    if 0 <= index < len(data["holdings"]):
-        data["holdings"].pop(index)
-        save_portfolio(data)
+    ensure_storage_ready()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM holdings ORDER BY id LIMIT 1 OFFSET ?",
+            (index,),
+        ).fetchone()
+        if row:
+            conn.execute("DELETE FROM holdings WHERE id = ?", (row["id"],))
+            conn.commit()
 
 
 def get_summary(results: list[dict]) -> dict:

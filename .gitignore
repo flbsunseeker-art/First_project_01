@@ -10,6 +10,9 @@ venv/
 .idea/
 .vscode/
 portfolio.json
+*.db
+*.sqlite
+*.sqlite3
 
 # Generated reports
 report_*.html
