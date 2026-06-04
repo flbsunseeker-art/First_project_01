@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>股票持仓报告 - {{ summary.update_time }}</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { text-align: center; margin-bottom: 20px; color: #1a1a1a; }
+        .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+        .summary-card { background: #fff; border-radius: 12px; padding: 20px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        .summary-card .label { font-size: 14px; color: #666; margin-bottom: 8px; }
+        .summary-card .value { font-size: 24px; font-weight: bold; }
+        .positive { color: #e74c3c; }
+        .negative { color: #27ae60; }
+        table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        th { background: #f8f9fa; padding: 10px 12px; text-align: left; font-weight: 600; font-size: 12px; color: #666; border-bottom: 2px solid #eee; }
+        td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+        td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        tr:hover { background: #fafafa; }
+        .market-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+        .market-A { background: #ffeaea; color: #d63031; }
+        .market-HK { background: #fff3e0; color: #e67e22; }
+        .market-US { background: #e3f2fd; color: #2196f3; }
+        .industry-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; background: #f0f0f0; color: #666; }
+        .footer { text-align: center; margin-top: 20px; color: #999; font-size: 12px; }
+        @media (max-width: 768px) {
+            .summary { grid-template-columns: repeat(2, 1fr); }
+            table { font-size: 11px; }
+            td, th { padding: 6px 8px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>股票持仓盈亏报告</h1>
+
+        <div class="summary">
+            <div class="summary-card">
+                <div class="label">总成本 (CNY)</div>
+                <div class="value">{{ "{:,.2f}".format(summary.total_cost) }}</div>
+            </div>
+            <div class="summary-card">
+                <div class="label">总市值 (CNY)</div>
+                <div class="value">{{ "{:,.2f}".format(summary.total_value) }}</div>
+            </div>
+            <div class="summary-card">
+                <div class="label">总盈亏 (CNY)</div>
+                <div class="value {{ 'positive' if summary.total_pnl >= 0 else 'negative' }}">
+                    {{ "{:+,.2f}".format(summary.total_pnl) }}
+                </div>
+            </div>
+            <div class="summary-card">
+                <div class="label">总收益率</div>
+                <div class="value {{ 'positive' if summary.total_pnl_pct >= 0 else 'negative' }}">
+                    {{ "{:+,.2f}".format(summary.total_pnl_pct) }}%
+                </div>
+            </div>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>市场</th>
+                    <th>名称</th>
+                    <th>代码</th>
+                    <th>行业</th>
+                    <th>成本价</th>
+                    <th>最新价</th>
+                    <th>股数</th>
+                    <th>仓位%</th>
+                    <th>成本(CNY)</th>
+                    <th>市值(CNY)</th>
+                    <th>盈亏(CNY)</th>
+                    <th>盈亏率</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for h in holdings %}
+                <tr>
+                    <td><span class="market-tag market-{{ h.market }}">{{ h.market }}</span></td>
+                    <td>{{ h.name }}</td>
+                    <td>{{ h.code }}</td>
+                    <td><span class="industry-tag">{{ h.industry if h.industry else '—' }}</span></td>
+                    <td class="num">{{ "{:,.2f}".format(h.cost_price) }} {{ h.currency }}</td>
+                    <td class="num">{{ "{:,.2f}".format(h.latest_price) if h.latest_price else '—' }} {{ h.currency }}</td>
+                    <td class="num">{{ h.shares }}</td>
+                    <td class="num">{{ "{:+,.2f}".format(h.position_pct) }}%</td>
+                    <td class="num">{{ "{:,.2f}".format(h.cost_total_cny) if h.cost_total_cny else '—' }}</td>
+                    <td class="num">{{ "{:,.2f}".format(h.market_value_cny) if h.market_value_cny else '—' }}</td>
+                    <td class="num {{ 'positive' if h.pnl and h.pnl >= 0 else 'negative' }}">
+                        {{ "{:+,.2f}".format(h.pnl) if h.pnl is not none else '—' }}
+                    </td>
+                    <td class="num {{ 'positive' if h.pnl_pct and h.pnl_pct >= 0 else 'negative' }}">
+                        {{ "{:+,.2f}".format(h.pnl_pct) }}%
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <div class="footer">
+            更新时间: {{ summary.update_time }} | 共 {{ summary.count }} 只股票
+        </div>
+    </div>
+</body>
+</html>

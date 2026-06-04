@@ -1,0 +1,15 @@
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local environment and editor files
+.env
+.DS_Store
+.idea/
+.vscode/
+portfolio.json
+
+# Generated reports
+report_*.html
