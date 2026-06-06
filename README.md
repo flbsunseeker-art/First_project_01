@@ -33,6 +33,23 @@ Database: SQLite first, PostgreSQL ready
 
 这是当前主使用路径。
 
+一键启动：
+
+```bash
+./start.sh
+```
+
+启动后访问：
+
+```text
+http://127.0.0.1:3000
+```
+
+`start.sh` 会同时启动：
+
+- FastAPI：`http://127.0.0.1:8000`
+- Next.js：`http://127.0.0.1:3000`
+
 ### Backend
 
 ```bash
@@ -71,7 +88,7 @@ Intel macOS / Codex 环境中 Next.js 原生 SWC 二进制加载受限的问题�
 
 ```bash
 python3 -m pip install -r requirements.txt
-./start.sh
+./start_legacy_streamlit.sh
 ```
 
 首次启动新版时，旧 `holdings` 数据会迁移为期初持仓，并在 `backups/`
