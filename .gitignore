@@ -10,9 +10,18 @@ venv/
 .idea/
 .vscode/
 portfolio.json
+data/
+backups/
 *.db
 *.sqlite
 *.sqlite3
+
+# Frontend dependencies and build outputs
+node_modules/
+.next/
+apps/web/node_modules/
+apps/web/.next/
+apps/web/out/
 
 # Generated reports
 report_*.html

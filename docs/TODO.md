@@ -51,19 +51,23 @@ push 判断条件：
 
 任务：
 
-- [ ] 创建 `apps/api` FastAPI 后端目录。
-- [ ] 创建 `apps/web` Next.js 前端目录。
-- [ ] 建立共享运行说明：后端端口、前端端口、环境变量。
+- [x] 创建 `apps/api` FastAPI 后端目录。
+- [x] 创建 `apps/web` Next.js 前端目录。
+- [x] 建立共享运行说明：后端端口、前端端口、环境变量。
 - [ ] 将 SQLite 默认路径迁移到 `data/portfolio.db`。
-- [ ] 保留现有 `portfolio.db` 的备份和迁移路径。
-- [ ] 更新 `.gitignore`，确保数据库、备份、缓存不入库。
-- [ ] 保留旧 Streamlit 入口作为临时参考，不再新增功能。
+- [x] 保留现有 `portfolio.db` 的备份和迁移路径。
+- [x] 更新 `.gitignore`，确保数据库、备份、缓存不入库。
+- [x] 保留旧 Streamlit 入口作为临时参考，不再新增功能。
 
 验收：
 
-- [ ] `apps/api` 可启动并返回 health check。
+- [x] `apps/api` 可启动并返回 health check。
 - [ ] `apps/web` 可启动并访问首页占位页。
-- [ ] 现有测试仍可运行。
+- [x] 现有测试仍可运行。
+
+备注：
+
+- 当前本机 Codex 环境有 Node，但没有 `npm` / `pnpm` / `yarn` / `corepack`，所以前端依赖安装和启动验证暂未完成。
 
 ## 2. Milestone 2：后端领域服务迁移
 
