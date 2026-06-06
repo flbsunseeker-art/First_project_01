@@ -93,19 +93,19 @@ push 判断条件：
 
 任务：
 
-- [ ] 迁移 `storage.py` 到 `apps/api/repositories` 或 `apps/api/infrastructure`。
-- [ ] 迁移 `ledger.py` 到 `apps/api/domain` / `apps/api/services`。
-- [ ] 迁移 `valuation.py` 到 `apps/api/services`。
-- [ ] 迁移 `market_data.py` 和 `fetcher.py` 到 `apps/api/adapters`。
-- [ ] 迁移 `report.py` 到 `apps/api/services`。
-- [ ] 保持核心计算模块不依赖 FastAPI request/response。
-- [ ] 补齐后端配置：数据库路径、离线模式、行情源开关。
+- [x] 迁移 `storage.py` 到 `apps/api/repositories` 或 `apps/api/infrastructure`。
+- [x] 迁移 `ledger.py` 到 `apps/api/domain` / `apps/api/services`。
+- [x] 迁移 `valuation.py` 到 `apps/api/services`。
+- [x] 迁移 `market_data.py` 和 `fetcher.py` 到 `apps/api/adapters`。
+- [x] 迁移 `report.py` 到 `apps/api/services`。
+- [x] 保持核心计算模块不依赖 FastAPI request/response。
+- [x] 补齐后端配置：数据库路径、离线模式、行情源开关。
 
 最小验收：
 
-- [ ] 现有账本、估值、行情、报告测试在新路径下通过。
-- [ ] FastAPI 可以调用迁移后的服务返回 health/overview smoke 结果。
-- [ ] 核心计算模块仍不依赖 FastAPI。
+- [x] 现有账本、估值、行情、报告测试在新路径下通过。
+- [x] FastAPI 可以调用迁移后的服务返回 health/overview smoke 结果。
+- [x] 核心计算模块仍不依赖 FastAPI。
 
 ## 3. Milestone 3：数据库 schema v3
 
@@ -247,9 +247,9 @@ push 判断条件：
 
 ## 10. 当前优先级
 
-下一步从 **Milestone 2** 开始：
+下一步从 **Milestone 3** 开始：
 
-1. 结合现有实现梳理可迁移模块边界。
-2. 将账本、估值、行情和存储逻辑迁移到 FastAPI 后端目录。
-3. 保持核心计算模块不依赖 FastAPI。
-4. 跑通迁移后的后端最小测试链路。
+1. 建立 schema migration 机制。
+2. 为交易记录补齐 `reason_category` 和 `note`。
+3. 迁移前自动备份数据库。
+4. 跑通旧数据保留和新字段读写的最小验证。
