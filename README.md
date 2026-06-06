@@ -81,5 +81,6 @@ python3 -m pip install -r requirements.txt
 - `daily_portfolio_snapshots`：每日组合级收益
 - `sync_runs`：历史补算状态
 
-所有业务数据默认保存在本地 `portfolio.db`。除非明确执行 Git 操作，否则应用
+所有业务数据默认保存在本地 `data/portfolio.db`。如果检测到旧版根目录
+`portfolio.db`，系统会在首次初始化时复制到新路径并保留备份。除非明确执行 Git 操作，否则应用
 不会提交或上传任何投资数据。

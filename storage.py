@@ -10,7 +10,10 @@ from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_FILE = Path(os.environ.get("PORTFOLIO_DB_FILE", BASE_DIR / "portfolio.db"))
+DATA_DIR = BASE_DIR / "data"
+DEFAULT_DB_FILE = DATA_DIR / "portfolio.db"
+LEGACY_DB_FILE = BASE_DIR / "portfolio.db"
+DB_FILE = Path(os.environ.get("PORTFOLIO_DB_FILE", DEFAULT_DB_FILE))
 SCHEMA_VERSION = "2"
 
 
@@ -44,6 +47,27 @@ def _set_metadata(conn: sqlite3.Connection, key: str, value: str) -> None:
         """,
         (key, value),
     )
+
+
+def _using_default_db_file() -> bool:
+    configured = os.environ.get("PORTFOLIO_DB_FILE")
+    return configured is None and DB_FILE == DEFAULT_DB_FILE
+
+
+def _migrate_default_database_location() -> Path | None:
+    if not _using_default_db_file():
+        return None
+    if DB_FILE.exists() or not LEGACY_DB_FILE.exists():
+        return None
+
+    DB_FILE.parent.mkdir(parents=True, exist_ok=True)
+    backup_dir = BASE_DIR / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_path = backup_dir / f"{LEGACY_DB_FILE.stem}-before-data-dir-{stamp}.db"
+    shutil.copy2(LEGACY_DB_FILE, backup_path)
+    shutil.copy2(LEGACY_DB_FILE, DB_FILE)
+    return backup_path
 
 
 def _backup_legacy_database(conn: sqlite3.Connection) -> Path | None:
@@ -232,6 +256,7 @@ def _migrate_legacy_holdings(conn: sqlite3.Connection) -> int:
 
 
 def ensure_database() -> dict:
+    location_backup = _migrate_default_database_location()
     DB_FILE.parent.mkdir(parents=True, exist_ok=True)
     with get_connection() as conn:
         backup = _backup_legacy_database(conn)
@@ -239,7 +264,10 @@ def ensure_database() -> dict:
         migrated = _migrate_legacy_holdings(conn)
         _set_metadata(conn, "schema_version", SCHEMA_VERSION)
         conn.commit()
-    return {"migrated": migrated, "backup": str(backup) if backup else None}
+    return {
+        "migrated": migrated,
+        "backup": str(backup or location_backup) if (backup or location_backup) else None,
+    }
 
 
 def get_setting(key: str, default: str | None = None) -> str | None:

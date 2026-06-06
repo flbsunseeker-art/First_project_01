@@ -54,7 +54,7 @@ push 判断条件：
 - [x] 创建 `apps/api` FastAPI 后端目录。
 - [x] 创建 `apps/web` Next.js 前端目录。
 - [x] 建立共享运行说明：后端端口、前端端口、环境变量。
-- [ ] 将 SQLite 默认路径迁移到 `data/portfolio.db`。
+- [x] 将 SQLite 默认路径迁移到 `data/portfolio.db`。
 - [x] 保留现有 `portfolio.db` 的备份和迁移路径。
 - [x] 更新 `.gitignore`，确保数据库、备份、缓存不入库。
 - [x] 保留旧 Streamlit 入口作为临时参考，不再新增功能。
