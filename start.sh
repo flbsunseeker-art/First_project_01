@@ -9,6 +9,10 @@ WEB_PORT="${STOCKPILOT_WEB_PORT:-3000}"
 
 cd "$ROOT_DIR"
 
+# Finder-launched .command files do not load the same PATH as an interactive
+# shell. Add common Node locations before starting Next.js.
+export PATH="/Applications/Codex.app/Contents/Resources:/opt/homebrew/bin:/usr/local/bin:$ROOT_DIR/.tools:$PATH"
+
 has_backend_deps() {
   "$1" - <<'PY' >/dev/null 2>&1
 import fastapi
@@ -37,6 +41,11 @@ elif command -v pnpm >/dev/null 2>&1; then
   PNPM="$(command -v pnpm)"
 else
   echo "Missing pnpm. Install pnpm or keep project-local .tools/pnpm available." >&2
+  exit 1
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "Missing node. Install Node.js, or run from a shell where node is available." >&2
   exit 1
 fi
 
