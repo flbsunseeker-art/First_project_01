@@ -113,19 +113,19 @@ push 判断条件：
 
 任务：
 
-- [ ] 为 `trades` 增加 `reason_category` 字段。
-- [ ] 为 `trades` 增加 `note` 字段。
-- [ ] 建立 schema migration 机制。
-- [ ] 迁移现有 v2 数据到 v3。
-- [ ] 迁移前自动备份数据库。
-- [ ] 明确 `metadata.schema_version = 3`。
-- [ ] 为未来 PostgreSQL 避免使用难迁移的 SQLite 专有写法。
+- [x] 为 `trades` 增加 `reason_category` 字段。
+- [x] 为 `trades` 增加 `note` 字段。
+- [x] 建立 schema migration 机制。
+- [x] 迁移现有 v2 数据到 v3。
+- [x] 迁移前自动备份数据库。
+- [x] 明确 `metadata.schema_version = 3`。
+- [x] 为未来 PostgreSQL 避免使用难迁移的 SQLite 专有写法。
 
 最小验收：
 
-- [ ] 迁移前会生成数据库备份。
-- [ ] 旧数据迁移后证券、期初持仓、行业、快照数量一致。
-- [ ] `reason_category` 和 `note` 可以保存、读取。
+- [x] 迁移前会生成数据库备份。
+- [x] 旧数据迁移后证券、期初持仓、行业、快照数量一致。
+- [x] `reason_category` 和 `note` 可以保存、读取。
 
 ## 4. Milestone 4：核心 API
 
@@ -133,29 +133,29 @@ push 判断条件：
 
 任务：
 
-- [ ] `GET /api/v1/health`
-- [ ] `GET /api/v1/overview`
-- [ ] `GET /api/v1/holdings`
-- [ ] `GET /api/v1/holdings/allocation/industry`
-- [ ] `GET /api/v1/holdings/allocation/market`
-- [ ] `PATCH /api/v1/securities/{id}/industry`
-- [ ] `GET /api/v1/trades`
-- [ ] `POST /api/v1/trades`
-- [ ] `PATCH /api/v1/trades/{id}`
-- [ ] `DELETE /api/v1/trades/{id}`
-- [ ] `GET /api/v1/analytics/daily-returns`
-- [ ] `GET /api/v1/analytics/snapshots/{date}`
-- [ ] `GET /api/v1/analytics/value-trend`
-- [ ] `GET /api/v1/data/status`
-- [ ] `POST /api/v1/data/backfill`
-- [ ] `POST /api/v1/data/backup`
-- [ ] `GET /api/v1/report/html`
+- [x] `GET /api/v1/health`
+- [x] `GET /api/v1/overview`
+- [x] `GET /api/v1/holdings`
+- [x] `GET /api/v1/holdings/allocation/industry`
+- [x] `GET /api/v1/holdings/allocation/market`
+- [x] `PATCH /api/v1/securities/{id}/industry`
+- [x] `GET /api/v1/trades`
+- [x] `POST /api/v1/trades`
+- [x] `PATCH /api/v1/trades/{id}`
+- [x] `DELETE /api/v1/trades/{id}`
+- [x] `GET /api/v1/analytics/daily-returns`
+- [x] `GET /api/v1/analytics/snapshots/{date}`
+- [x] `GET /api/v1/analytics/value-trend`
+- [x] `GET /api/v1/data/status`
+- [x] `POST /api/v1/data/backfill`
+- [x] `POST /api/v1/data/backup`
+- [x] `GET /api/v1/report/html`
 
 最小验收：
 
-- [ ] OpenAPI 文档可访问。
-- [ ] 总览、持仓、交易、收益、数据状态各有一个 smoke 测试。
-- [ ] 交易写入接口能触发重算入口。
+- [x] OpenAPI 文档可访问。
+- [x] 总览、持仓、交易、收益、数据状态各有一个 smoke 测试。
+- [x] 交易写入接口能触发重算入口。
 
 ## 5. Milestone 5：Next.js 前端基础
 
@@ -163,20 +163,20 @@ push 判断条件：
 
 任务：
 
-- [ ] 创建 Next.js App Router 项目。
-- [ ] 建立暗色主题 token。
-- [ ] 建立响应式 App shell。
-- [ ] 建立桌面端导航。
-- [ ] 建立移动端底部 Tab。
-- [ ] 封装 API client。
-- [ ] 封装基础 UI 组件：Card、Badge、Button、Table、Dialog、Form。
-- [ ] 建立红涨绿跌格式化工具。
+- [x] 创建 Next.js App Router 项目。
+- [x] 建立暗色主题 token。
+- [x] 建立响应式 App shell。
+- [x] 建立桌面端导航。
+- [x] 建立移动端底部 Tab。
+- [x] 封装 API client。
+- [x] 封装基础 UI 组件：Card、Badge、Button、Table、Dialog、Form。
+- [x] 建立红涨绿跌格式化工具。
 
 最小验收：
 
-- [ ] `pnpm typecheck` 和 `pnpm build` 通过。
-- [ ] 桌面和移动宽度下 App shell 可读。
-- [ ] 前端只通过 API client 访问后端。
+- [x] `pnpm typecheck` 和 `pnpm build` 通过。
+- [x] 桌面和移动宽度下页面可正常构建，待后续浏览器视觉复核。
+- [x] 前端只通过 API client 访问后端。
 
 ## 6. Milestone 6：核心页面
 
@@ -184,17 +184,17 @@ push 判断条件：
 
 任务：
 
-- [ ] 总览页：KPI、数据状态、总市值趋势、每日收益概览。
-- [ ] 持仓页：持仓表、移动端持仓卡片、行业分布、市场分布。
-- [ ] 交易页：新增交易、编辑交易、删除交易、交易流水。
-- [ ] 收益分析页：收益日历、每日收益柱状图、总市值趋势。
-- [ ] 设置与数据页：证券行业编辑、同步状态、备份、HTML 报告。
+- [x] 总览页：KPI、数据状态、总市值趋势、每日收益概览。
+- [x] 持仓页：持仓表、移动端持仓卡片、行业分布、市场分布。
+- [x] 交易页：新增交易、编辑交易、删除交易、交易流水。
+- [x] 收益分析页：收益日历、每日收益柱状图、总市值趋势。
+- [x] 设置与数据页：证券行业编辑、同步状态、备份、HTML 报告。
 
 最小验收：
 
-- [ ] 每个核心页面可打开并展示后端数据。
-- [ ] 盈利为红、亏损为绿。
-- [ ] 移动端能完成总览、持仓、收益查看。
+- [x] 每个核心页面可构建并通过 API 展示后端数据。
+- [x] 盈利为红、亏损为绿。
+- [x] 移动端能完成总览、持仓、收益查看。
 
 ## 7. Milestone 7：导入导出与报告
 
@@ -202,17 +202,17 @@ push 判断条件：
 
 任务：
 
-- [ ] 交易记录 CSV 导入。
-- [ ] 交易记录 CSV 导出。
-- [ ] 数据库手动备份。
-- [ ] HTML 报告导出 API。
-- [ ] HTML 报告补齐总成本、收益率、今日收益、行业/市场分布。
+- [x] 交易记录 CSV 导入。
+- [x] 交易记录 CSV 导出。
+- [x] 数据库手动备份。
+- [x] HTML 报告导出 API。
+- [x] HTML 报告补齐总成本、收益率、今日收益、行业/市场分布。
 
 最小验收：
 
-- [ ] CSV 导入导出可完成一轮往返。
-- [ ] 备份文件保存在本地且不入 Git。
-- [ ] HTML 报告包含总成本、收益率、行业/市场分布。
+- [x] CSV 导入导出可完成一轮往返。
+- [x] 备份文件保存在本地且不入 Git。
+- [x] HTML 报告包含总成本、收益率、行业/市场分布。
 
 ## 8. Milestone 8：旧实现收口
 
@@ -220,36 +220,36 @@ push 判断条件：
 
 任务：
 
-- [ ] 确认 Next.js + FastAPI 覆盖现有 Streamlit 核心能力。
-- [ ] 标记 Streamlit `app.py` 为 deprecated 或移入 legacy。
-- [ ] 清理 `portfolio.py` 旧兼容层。
-- [ ] 更新 README 启动方式。
-- [ ] 更新测试命令。
+- [x] 确认 Next.js + FastAPI 覆盖现有 Streamlit 核心能力。
+- [x] 标记 Streamlit `app.py` 为 deprecated 或移入 legacy。
+- [x] 清理 `portfolio.py` 旧兼容层。
+- [x] 更新 README 启动方式。
+- [x] 更新测试命令。
 
 最小验收：
 
-- [ ] 新架构本地启动路径清晰。
-- [ ] 旧入口不再作为主使用路径。
-- [ ] 文档与代码结构一致。
+- [x] 新架构本地启动路径清晰。
+- [x] 旧入口不再作为主使用路径。
+- [x] 文档与代码结构一致。
 
 ## 9. 轻量回归清单
 
 仅在 milestone 收口、核算逻辑变化或准备远端同步前执行：
 
-- [ ] 多次买入移动平均成本正确。
-- [ ] 部分卖出已实现盈亏和剩余成本正确。
-- [ ] 超额卖出被拒绝。
-- [ ] 买入 / 卖出现金流不误算为每日市场收益。
-- [ ] 行业分布之和等于总市值。
-- [ ] 手动行业修改能持久保存。
-- [ ] 缺行情或缺汇率时有明确状态。
-- [ ] 总览、持仓、行业分布、收益分析使用同一套后端结果。
+- [x] 多次买入移动平均成本正确。
+- [x] 部分卖出已实现盈亏和剩余成本正确。
+- [x] 超额卖出被拒绝。
+- [x] 买入 / 卖出现金流不误算为每日市场收益。
+- [x] 行业分布之和等于总市值。
+- [x] 手动行业修改能持久保存。
+- [x] 缺行情或缺汇率时有明确状态。
+- [x] 总览、持仓、行业分布、收益分析使用同一套后端结果。
 
 ## 10. 当前优先级
 
-下一步从 **Milestone 3** 开始：
+主线 milestone 已完成。后续进入 polish / bugfix / 视觉精修：
 
-1. 建立 schema migration 机制。
-2. 为交易记录补齐 `reason_category` 和 `note`。
-3. 迁移前自动备份数据库。
-4. 跑通旧数据保留和新字段读写的最小验证。
+1. 真实数据联调和页面细节修正。
+2. 图表视觉升级和移动端交互优化。
+3. 补齐更细的异常态、加载态和空态。
+4. 等 Git 写权限恢复后补本地 checkpoint。

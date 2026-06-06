@@ -15,7 +15,7 @@ DATA_DIR = settings.data_dir
 DEFAULT_DB_FILE = DATA_DIR / "portfolio.db"
 LEGACY_DB_FILE = BASE_DIR / "portfolio.db"
 DB_FILE = settings.db_file
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 
 def get_connection() -> sqlite3.Connection:
@@ -48,6 +48,11 @@ def _set_metadata(conn: sqlite3.Connection, key: str, value: str) -> None:
         """,
         (key, value),
     )
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row["name"] == column for row in rows)
 
 
 def _using_default_db_file() -> bool:
@@ -83,6 +88,34 @@ def _backup_legacy_database(conn: sqlite3.Connection) -> Path | None:
     if not backup_path.exists():
         conn.commit()
         shutil.copy2(DB_FILE, backup_path)
+    return backup_path
+
+
+def _schema_version(conn: sqlite3.Connection) -> int:
+    value = _metadata(conn, "schema_version")
+    if value is None:
+        return 1 if _table_exists(conn, "holdings") else 0
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+
+def _backup_before_schema_migration(conn: sqlite3.Connection, target_version: str) -> Path | None:
+    if not DB_FILE.exists():
+        return None
+    current = _schema_version(conn)
+    if current >= int(target_version):
+        return None
+    if current == 1 and _table_exists(conn, "holdings"):
+        return None
+
+    backup_dir = DB_FILE.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_path = backup_dir / f"{DB_FILE.stem}-before-v{target_version}-{stamp}.db"
+    conn.commit()
+    shutil.copy2(DB_FILE, backup_path)
     return backup_path
 
 
@@ -126,6 +159,8 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             side TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
             shares TEXT NOT NULL,
             price TEXT NOT NULL,
+            reason_category TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (security_id) REFERENCES securities(id),
@@ -198,6 +233,17 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "trades"):
+        return
+    if not _column_exists(conn, "trades", "reason_category"):
+        conn.execute(
+            "ALTER TABLE trades ADD COLUMN reason_category TEXT NOT NULL DEFAULT ''"
+        )
+    if not _column_exists(conn, "trades", "note"):
+        conn.execute("ALTER TABLE trades ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+
+
 def _migrate_legacy_holdings(conn: sqlite3.Connection) -> int:
     if not _table_exists(conn, "holdings"):
         return 0
@@ -259,14 +305,17 @@ def ensure_database() -> dict:
     location_backup = _migrate_default_database_location()
     DB_FILE.parent.mkdir(parents=True, exist_ok=True)
     with get_connection() as conn:
-        backup = _backup_legacy_database(conn)
+        legacy_backup = _backup_legacy_database(conn)
+        schema_backup = _backup_before_schema_migration(conn, SCHEMA_VERSION)
         _create_schema(conn)
+        _migrate_schema(conn)
         migrated = _migrate_legacy_holdings(conn)
         _set_metadata(conn, "schema_version", SCHEMA_VERSION)
         conn.commit()
+    backup = legacy_backup or schema_backup or location_backup
     return {
         "migrated": migrated,
-        "backup": str(backup or location_backup) if (backup or location_backup) else None,
+        "backup": str(backup) if backup else None,
     }
 
 

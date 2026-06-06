@@ -109,6 +109,16 @@ def get_security(security_id: int) -> dict:
     return dict(row)
 
 
+def find_security(market: str, code: str) -> dict | None:
+    storage.ensure_database()
+    with storage.get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM securities WHERE market = ? AND code = ?",
+            (market.strip().upper(), code.strip().upper()),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def create_security(
     market: str,
     code: str,
@@ -246,6 +256,8 @@ def record_trade(
     side: str,
     shares,
     price,
+    reason_category: str = "",
+    note: str = "",
 ) -> int:
     day = _iso_date(trade_date)
     _validate_baseline_date(day)
@@ -256,6 +268,8 @@ def record_trade(
         raise LedgerError("交易方向必须为 BUY 或 SELL")
     if qty <= ZERO or trade_price <= ZERO:
         raise LedgerError("成交股数和价格必须大于 0")
+    reason_category = reason_category.strip()
+    note = note.strip()
 
     storage.ensure_database()
     now = datetime.now().isoformat(timespec="seconds")
@@ -266,8 +280,8 @@ def record_trade(
                 """
                 INSERT INTO trades
                     (security_id, trade_date, sequence, side, shares, price,
-                     created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     reason_category, note, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     security_id,
@@ -276,6 +290,8 @@ def record_trade(
                     side,
                     str(qty),
                     str(trade_price),
+                    reason_category,
+                    note,
                     now,
                     now,
                 ),
@@ -294,6 +310,8 @@ def update_trade(
     side: str,
     shares,
     price,
+    reason_category: str = "",
+    note: str = "",
 ) -> None:
     day = _iso_date(trade_date)
     _validate_baseline_date(day)
@@ -302,6 +320,8 @@ def update_trade(
     trade_price = decimal(price)
     if side not in {"BUY", "SELL"} or qty <= ZERO or trade_price <= ZERO:
         raise LedgerError("交易信息无效")
+    reason_category = reason_category.strip()
+    note = note.strip()
     now = datetime.now().isoformat(timespec="seconds")
     storage.ensure_database()
     with storage.get_connection() as conn:
@@ -316,10 +336,20 @@ def update_trade(
                 """
                 UPDATE trades
                 SET trade_date = ?, sequence = ?, side = ?, shares = ?,
-                    price = ?, updated_at = ?
+                    price = ?, reason_category = ?, note = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (day, sequence, side, str(qty), str(trade_price), now, trade_id),
+                (
+                    day,
+                    sequence,
+                    side,
+                    str(qty),
+                    str(trade_price),
+                    reason_category,
+                    note,
+                    now,
+                    trade_id,
+                ),
             )
             _calculate_positions_conn(conn, date.today().isoformat())
             conn.commit()

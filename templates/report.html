@@ -14,7 +14,7 @@
         h1, h2 { color: #f8fafc; }
         .subtitle, .footer { color: #7dd3fc; }
         .metrics {
-            display: grid; grid-template-columns: repeat(5, 1fr);
+            display: grid; grid-template-columns: repeat(4, 1fr);
             gap: 12px; margin: 24px 0;
         }
         .card {
@@ -51,7 +51,10 @@
 
     <div class="metrics">
         <div class="card"><div class="label">股票总市值</div><div class="value">¥{{ "{:,.2f}".format(summary.total_market_value_cny) }}</div></div>
+        <div class="card"><div class="label">总成本</div><div class="value">¥{{ "{:,.2f}".format(summary.total_cost_cny) }}</div></div>
         <div class="card"><div class="label">累计盈亏</div><div class="value {{ 'positive' if summary.total_pnl_cny >= 0 else 'negative' }}">{{ "{:+,.2f}".format(summary.total_pnl_cny) }}</div></div>
+        <div class="card"><div class="label">累计收益率</div><div class="value {{ 'positive' if summary.total_pnl_pct >= 0 else 'negative' }}">{{ "{:+.2f}%".format(summary.total_pnl_pct) }}</div></div>
+        <div class="card"><div class="label">今日盈亏</div><div class="value {{ 'positive' if summary.today_pnl_cny and summary.today_pnl_cny >= 0 else 'negative' }}">{{ "{:+,.2f}".format(summary.today_pnl_cny) if summary.today_pnl_cny is not none else "—" }}</div></div>
         <div class="card"><div class="label">已实现盈亏</div><div class="value {{ 'positive' if summary.realized_pnl_cny >= 0 else 'negative' }}">{{ "{:+,.2f}".format(summary.realized_pnl_cny) }}</div></div>
         <div class="card"><div class="label">未实现盈亏</div><div class="value {{ 'positive' if summary.unrealized_pnl_cny >= 0 else 'negative' }}">{{ "{:+,.2f}".format(summary.unrealized_pnl_cny) }}</div></div>
         <div class="card"><div class="label">持仓数量</div><div class="value">{{ holdings|length }}</div></div>

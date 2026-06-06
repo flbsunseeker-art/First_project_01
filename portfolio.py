@@ -1,6 +1,6 @@
-"""Compatibility helpers for code that previously imported ``portfolio``.
+"""Legacy compatibility helpers for code that previously imported ``portfolio``.
 
-The v2 application uses ``storage``, ``ledger`` and ``valuation`` directly.
+New code should use ``apps.api.domain.ledger`` and related backend modules.
 """
 
 from __future__ import annotations

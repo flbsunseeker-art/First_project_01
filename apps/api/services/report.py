@@ -17,6 +17,9 @@ def generate_report(output_dir: str | Path | None = None) -> str:
     output = Path(output_dir) if output_dir else BASE_DIR
     output.mkdir(parents=True, exist_ok=True)
     current = valuation.current_valuation()
+    total_cost = current["total_cost_cny"]
+    total_pnl = current["total_pnl_cny"]
+    current["total_pnl_pct"] = total_pnl / total_cost * 100 if total_cost else 0
     industry = valuation.get_industry_allocation(current["rows"])
     market: dict[str, float] = {}
     for row in current["rows"]:

@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
-from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 
-from apps.api.services.overview import get_overview_smoke
+from apps.api.routers.v1 import router as v1_router
 
 
 APP_VERSION = "0.1.0"
@@ -45,9 +44,7 @@ def create_app() -> FastAPI:
             "version": APP_VERSION,
         }
 
-    @app.get("/api/v1/overview", tags=["portfolio"])
-    def overview() -> dict:
-        return jsonable_encoder(get_overview_smoke())
+    app.include_router(v1_router)
 
     return app
 

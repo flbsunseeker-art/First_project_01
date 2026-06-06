@@ -31,6 +31,8 @@ Database: SQLite first, PostgreSQL ready
 
 ## 新架构本地启动
 
+这是当前主使用路径。
+
 ### Backend
 
 ```bash
@@ -65,6 +67,8 @@ Intel macOS / Codex 环境中 Next.js 原生 SWC 二进制加载受限的问题�
 
 ## 旧原型启动
 
+该入口仅作为迁移参考，不再作为主产品路径扩展。
+
 ```bash
 python3 -m pip install -r requirements.txt
 ./start.sh
@@ -86,3 +90,26 @@ python3 -m pip install -r requirements.txt
 所有业务数据默认保存在本地 `data/portfolio.db`。如果检测到旧版根目录
 `portfolio.db`，系统会在首次初始化时复制到新路径并保留备份。除非明确执行 Git 操作，否则应用
 不会提交或上传任何投资数据。
+
+## 验证命令
+
+后端核心测试：
+
+```bash
+python3 -m unittest discover -s tests -q
+```
+
+前端类型检查和构建：
+
+```bash
+cd apps/web
+pnpm run typecheck
+pnpm run build
+```
+
+API smoke：
+
+```bash
+python3 -m uvicorn apps.api.main:app --port 8000
+curl http://127.0.0.1:8000/api/v1/health
+```

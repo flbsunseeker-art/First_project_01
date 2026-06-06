@@ -6,12 +6,17 @@ import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from apps.api.adapters import market_data
 from apps.api.domain import ledger
 from apps.api.repositories import storage
 
 
 ZERO = Decimal("0")
+
+
+def _market_data():
+    from apps.api.adapters import market_data
+
+    return market_data
 
 
 def _days(start: date, end: date):
@@ -27,6 +32,7 @@ def _securities_by_id() -> dict[int, dict]:
 
 
 def _trade_flows(day: date) -> tuple[Decimal, Decimal]:
+    market_data = _market_data()
     buy = ZERO
     sell = ZERO
     with storage.get_connection() as conn:
@@ -53,6 +59,7 @@ def _trade_flows(day: date) -> tuple[Decimal, Decimal]:
 
 
 def _realized_pnl_cny(day: date) -> Decimal:
+    market_data = _market_data()
     total = ZERO
     for event in ledger.realized_events(day):
         rate = market_data.get_cached_rate(event["currency"], event["trade_date"])
@@ -106,6 +113,7 @@ def _has_valuation_activity(day: date) -> bool:
 
 
 def value_portfolio(valuation_date: date) -> dict:
+    market_data = _market_data()
     securities = _securities_by_id()
     positions = ledger.calculate_positions(valuation_date)
     details = []
@@ -276,6 +284,7 @@ def _record_incomplete(day: date, message: str) -> None:
 
 
 def backfill_snapshots(start_date: date, end_date: date) -> dict:
+    market_data = _market_data()
     storage.ensure_database()
     securities = ledger.list_securities(active_only=True)
     currencies = {security["currency"] for security in securities}
@@ -394,7 +403,11 @@ def current_valuation() -> dict:
         for security_id, position in positions.items()
         if position.shares > ZERO
     ]
-    quotes, rates = market_data.get_live_prices(active)
+    if active:
+        quotes, rates = _market_data().get_live_prices(active)
+    else:
+        quotes = {}
+        rates = {"CNY": Decimal("1"), "USD": Decimal("0"), "HKD": Decimal("0")}
     rows = []
     total_value = ZERO
     total_cost = ZERO

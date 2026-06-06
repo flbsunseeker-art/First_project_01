@@ -1,4 +1,8 @@
-"""Streamlit UI for the multi-market stock performance tracker."""
+"""Deprecated Streamlit prototype for the multi-market stock tracker.
+
+The primary StockPilot app is now Next.js + FastAPI. This file remains as a
+legacy reference while the migration finishes.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +27,11 @@ st.set_page_config(
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
+)
+
+st.warning(
+    "Streamlit 入口已标记为 legacy。StockPilot 主路径是 Next.js + FastAPI。",
+    icon="⚠️",
 )
 
 st.markdown(
