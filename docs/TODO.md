@@ -62,12 +62,13 @@ push 判断条件：
 验收：
 
 - [x] `apps/api` 可启动并返回 health check。
-- [ ] `apps/web` 可启动并访问首页占位页。
+- [x] `apps/web` 可启动并访问首页占位页。
 - [x] 现有测试仍可运行。
 
 备注：
 
-- 当前本机 Codex 环境有 Node，但没有 `npm` / `pnpm` / `yarn` / `corepack`，所以前端依赖安装和启动验证暂未完成。
+- 当前本机 Codex 环境有 Node，但没有系统级 `npm` / `pnpm` / `yarn` / `corepack`。
+- 已使用项目本地 `.tools/pnpm` 安装前端依赖并完成 Next.js 首页验证。
 
 ## 2. Milestone 2：后端领域服务迁移
 

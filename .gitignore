@@ -9,6 +9,7 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+.tools/
 portfolio.json
 data/
 backups/
@@ -19,9 +20,11 @@ backups/
 # Frontend dependencies and build outputs
 node_modules/
 .next/
+tsconfig.tsbuildinfo
 apps/web/node_modules/
 apps/web/.next/
 apps/web/out/
+apps/web/tsconfig.tsbuildinfo
 
 # Generated reports
 report_*.html

@@ -46,13 +46,12 @@ curl http://127.0.0.1:8000/api/v1/health
 
 ### Frontend
 
-前端位于 `apps/web`。当前环境需要可用的 Node 包管理器，例如 `npm`、`pnpm`
-或 `yarn`。
+前端位于 `apps/web`。推荐使用 `pnpm`。
 
 ```bash
 cd apps/web
-npm install
-npm run dev
+pnpm install
+pnpm run dev
 ```
 
 默认访问：
@@ -60,6 +59,9 @@ npm run dev
 ```text
 http://localhost:3000
 ```
+
+当前仓库已在 `apps/web/package.json` 中配置 `NEXT_TEST_WASM_DIR`，用于兼容
+Intel macOS / Codex 环境中 Next.js 原生 SWC 二进制加载受限的问题。
 
 ## 旧原型启动
 
