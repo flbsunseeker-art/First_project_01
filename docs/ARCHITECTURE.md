@@ -80,8 +80,8 @@ Core:
 - `market_data.py` / `fetcher.py` -> Market data adapters
 - `storage.py` -> Repository + migration + backup
 - `report.py` / `templates/report.html` -> Report service
-- `app.py` -> 原型参考，后续由 Next.js 前端替代
-- `portfolio.py` -> 旧兼容层，后续下线
+- `legacy/app.py` -> 原型参考，后续由 Next.js 前端替代
+- `legacy/portfolio.py` -> 旧兼容层，后续下线
 
 ## 4. 目标目录结构
 
@@ -476,7 +476,7 @@ API P0：
 7. 将 Streamlit UI 替换为 Next.js 页面。
 8. 补齐数据状态、导入导出、HTML 报告 API。
 9. 补齐 Web 和移动端响应式页面。
-10. 下线 `portfolio.py` 旧兼容层和 Streamlit 原型入口。
+10. 下线 `legacy/portfolio.py` 旧兼容层和 Streamlit 原型入口。
 
 ## 14. 演进顺序
 
