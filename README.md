@@ -39,6 +39,12 @@ Database: SQLite first, PostgreSQL ready
 ./start.sh
 ```
 
+在 macOS Finder 中也可以双击：
+
+```text
+start.command
+```
+
 启动后访问：
 
 ```text
