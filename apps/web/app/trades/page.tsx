@@ -4,7 +4,7 @@ import { Badge, Card, DataTable } from "../../components/ui";
 import { apiGet } from "../../lib/api";
 import { fallbackTrades } from "../../lib/fallback-data";
 import { formatMoney } from "../../lib/format";
-import type { Trade } from "../../lib/types";
+import type { Security, Trade } from "../../lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -16,15 +16,23 @@ async function loadTrades() {
   }
 }
 
+async function loadSecurities() {
+  try {
+    return await apiGet<Security[]>("/api/v1/securities");
+  } catch {
+    return [];
+  }
+}
+
 export default async function TradesPage() {
-  const trades = await loadTrades();
+  const [trades, securities] = await Promise.all([loadTrades(), loadSecurities()]);
 
   return (
     <AppShell>
       <main className="dashboard">
         <section className="page-heading">
           <Badge tone="info">Trades</Badge>
-          <h2>手工交易流水</h2>
+          <h2>填报交易流水</h2>
           <p>买卖记录是持仓推导的真相源；修改交易后后端会触发后续快照重算。</p>
         </section>
 
@@ -33,7 +41,7 @@ export default async function TradesPage() {
             <h2>新增交易</h2>
             <Badge tone="warning">Manual</Badge>
           </div>
-          <TradeForm />
+          <TradeForm securities={securities} />
         </Card>
 
         <Card>

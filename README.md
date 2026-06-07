@@ -11,7 +11,7 @@ Backend: FastAPI + Python
 Database: SQLite first, PostgreSQL ready
 ```
 
-旧 Streamlit 实现仅作为原型参考，后续不再作为目标产品架构扩展。
+旧 Streamlit 原型已经移出本项目目录，仅作为本地备份参考；当前仓库只保留新项目实现。
 
 ## 核心能力
 
@@ -29,9 +29,7 @@ Database: SQLite first, PostgreSQL ready
           - 当日买入金额 + 当日卖出金额
 ```
 
-## 新架构本地启动
-
-这是当前主使用路径。
+## 本地启动
 
 一键启动：
 
@@ -39,7 +37,7 @@ Database: SQLite first, PostgreSQL ready
 ./start.command
 ```
 
-在 macOS Finder 中也可以双击：
+在 macOS Finder 中也可以双击运行：
 
 ```text
 start.command
@@ -55,6 +53,62 @@ http://127.0.0.1:3000
 
 - FastAPI：`http://127.0.0.1:8000`
 - Next.js：`http://127.0.0.1:3000`
+
+如端口被占用，可以临时指定端口：
+
+```bash
+STOCKPILOT_API_PORT=8002 STOCKPILOT_WEB_PORT=3002 ./start.command
+```
+
+## 在另一台电脑同步运行
+
+从 GitHub 克隆仓库：
+
+```bash
+git clone git@github.com:flbsunseeker-art/First_project_01.git
+cd First_project_01
+```
+
+安装后端依赖：
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+安装前端依赖：
+
+```bash
+cd apps/web
+corepack enable
+pnpm install
+cd ../..
+```
+
+如果 `corepack` 不可用，可以先安装 pnpm：
+
+```bash
+npm install -g pnpm
+```
+
+启动应用：
+
+```bash
+./start.command
+```
+
+然后访问：
+
+```text
+http://127.0.0.1:3000
+```
+
+如果公司电脑不能使用 SSH clone，也可以把远端地址换成 HTTPS。
+
+```bash
+git clone https://github.com/flbsunseeker-art/First_project_01.git
+```
 
 ### Backend
 
@@ -88,17 +142,17 @@ http://localhost:3000
 当前仓库已在 `apps/web/package.json` 中配置 `NEXT_TEST_WASM_DIR`，用于兼容
 Intel macOS / Codex 环境中 Next.js 原生 SWC 二进制加载受限的问题。
 
-## 旧原型启动
+## 本地数据
 
-该入口仅作为迁移参考，不再作为主产品路径扩展。
+业务数据默认保存在本地 `data/portfolio.db`，不会提交到 GitHub。数据库、备份、缓存和报告文件都被 `.gitignore` 排除。
 
-```bash
-python3 -m pip install -r requirements.txt
-./legacy/start_legacy_streamlit.sh
+如需在另一台电脑演示同一份真实数据，需要手动复制本机的 `data/portfolio.db` 到新电脑同路径：
+
+```text
+data/portfolio.db
 ```
 
-首次启动新版时，旧 `holdings` 数据会迁移为期初持仓，并在 `backups/`
-目录创建迁移前数据库副本。迁移日是可信历史起点，迁移日前不生成收益曲线。
+如果不复制数据库，应用仍可启动，但会使用新电脑本地的数据状态。
 
 ## 数据结构
 
@@ -110,16 +164,14 @@ python3 -m pip install -r requirements.txt
 - `daily_portfolio_snapshots`：每日组合级收益
 - `sync_runs`：历史补算状态
 
-所有业务数据默认保存在本地 `data/portfolio.db`。如果检测到旧版根目录
-`portfolio.db`，系统会在首次初始化时复制到新路径并保留备份。除非明确执行 Git 操作，否则应用
-不会提交或上传任何投资数据。
+如果检测到旧版根目录 `portfolio.db`，系统会在首次初始化时复制到新路径并保留备份。除非你手动复制数据库，否则 GitHub 同步只同步应用代码，不同步投资数据。
 
 ## 验证命令
 
 后端核心测试：
 
 ```bash
-python3 -m unittest discover -s tests -q
+python3 -m pytest tests/test_portfolio_storage.py
 ```
 
 前端类型检查和构建：

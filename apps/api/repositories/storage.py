@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 
 from apps.api.core.config import settings
@@ -16,6 +16,7 @@ DEFAULT_DB_FILE = DATA_DIR / "portfolio.db"
 LEGACY_DB_FILE = BASE_DIR / "portfolio.db"
 DB_FILE = settings.db_file
 SCHEMA_VERSION = "3"
+HISTORY_BASELINE_DATE = "2026-05-11"
 
 
 def get_connection() -> sqlite3.Connection:
@@ -114,6 +115,18 @@ def _backup_before_schema_migration(conn: sqlite3.Connection, target_version: st
     backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_path = backup_dir / f"{DB_FILE.stem}-before-v{target_version}-{stamp}.db"
+    conn.commit()
+    shutil.copy2(DB_FILE, backup_path)
+    return backup_path
+
+
+def _backup_before_history_baseline(conn: sqlite3.Connection) -> Path | None:
+    if not DB_FILE.exists():
+        return None
+    backup_dir = DB_FILE.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_path = backup_dir / f"{DB_FILE.stem}-before-history-baseline-{stamp}.db"
     conn.commit()
     shutil.copy2(DB_FILE, backup_path)
     return backup_path
@@ -262,7 +275,7 @@ def _migrate_legacy_holdings(conn: sqlite3.Connection) -> int:
         """
     ).fetchall()
     now = datetime.now().isoformat(timespec="seconds")
-    baseline = date.today().isoformat()
+    baseline = HISTORY_BASELINE_DATE
     for row in rows:
         cursor = conn.execute(
             """
@@ -301,6 +314,34 @@ def _migrate_legacy_holdings(conn: sqlite3.Connection) -> int:
     return len(rows)
 
 
+def _ensure_history_baseline(conn: sqlite3.Connection) -> Path | None:
+    current = _metadata(conn, "portfolio_baseline_date")
+    needs_metadata = current is None or current > HISTORY_BASELINE_DATE
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS n
+        FROM opening_positions
+        WHERE start_date > ?
+        """,
+        (HISTORY_BASELINE_DATE,),
+    ).fetchone()
+    needs_positions = bool(row and row["n"])
+    if not needs_metadata and not needs_positions:
+        return None
+
+    backup = _backup_before_history_baseline(conn)
+    conn.execute(
+        """
+        UPDATE opening_positions
+        SET start_date = ?
+        WHERE start_date > ?
+        """,
+        (HISTORY_BASELINE_DATE, HISTORY_BASELINE_DATE),
+    )
+    _set_metadata(conn, "portfolio_baseline_date", HISTORY_BASELINE_DATE)
+    return backup
+
+
 def ensure_database() -> dict:
     location_backup = _migrate_default_database_location()
     DB_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -310,9 +351,10 @@ def ensure_database() -> dict:
         _create_schema(conn)
         _migrate_schema(conn)
         migrated = _migrate_legacy_holdings(conn)
+        baseline_backup = _ensure_history_baseline(conn)
         _set_metadata(conn, "schema_version", SCHEMA_VERSION)
         conn.commit()
-    backup = legacy_backup or schema_backup or location_backup
+    backup = baseline_backup or legacy_backup or schema_backup or location_backup
     return {
         "migrated": migrated,
         "backup": str(backup) if backup else None,

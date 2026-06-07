@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -11,6 +12,16 @@ from apps.api.repositories import storage
 
 
 ZERO = Decimal("0")
+CURRENT_CACHE_TTL_SECONDS = 15
+BACKFILL_CACHE_TTL_SECONDS = 30
+_current_cache: tuple[float, dict] | None = None
+_backfill_checked_at = 0.0
+
+
+def invalidate_caches() -> None:
+    global _current_cache, _backfill_checked_at
+    _current_cache = None
+    _backfill_checked_at = 0.0
 
 
 def _market_data():
@@ -361,15 +372,31 @@ def rebuild_from(start_date: date | str) -> dict:
 
 
 def auto_backfill() -> dict:
+    global _backfill_checked_at
+    now = time.monotonic()
+    if now - _backfill_checked_at < BACKFILL_CACHE_TTL_SECONDS:
+        return {"status": "ok", "completed": 0, "errors": [], "cached": True}
     storage.ensure_database()
     first = ledger.earliest_ledger_date()
     if not first:
+        _backfill_checked_at = now
         return {"status": "ok", "completed": 0, "errors": []}
+    baseline = storage.get_setting(
+        "portfolio_baseline_date",
+        storage.HISTORY_BASELINE_DATE,
+    ) or storage.HISTORY_BASELINE_DATE
+    first = min(first, baseline)
     end = date.today() - timedelta(days=1)
     with storage.get_connection() as conn:
         row = conn.execute(
             """
             SELECT MAX(snapshot_date) AS last_day
+            FROM daily_portfolio_snapshots WHERE status = 'ok'
+            """
+        ).fetchone()
+        first_ok = conn.execute(
+            """
+            SELECT MIN(snapshot_date) AS first_day
             FROM daily_portfolio_snapshots WHERE status = 'ok'
             """
         ).fetchone()
@@ -384,18 +411,31 @@ def auto_backfill() -> dict:
     if incomplete and incomplete["first_incomplete"]:
         start = date.fromisoformat(incomplete["first_incomplete"])
         if start <= end:
+            _backfill_checked_at = now
             return rebuild_from(start)
+    first_day = date.fromisoformat(first)
+    if first_ok and first_ok["first_day"]:
+        earliest_ok = date.fromisoformat(first_ok["first_day"])
+        if first_day < earliest_ok:
+            _backfill_checked_at = now
+            return backfill_snapshots(first_day, earliest_ok - timedelta(days=1))
     start = (
         date.fromisoformat(row["last_day"]) + timedelta(days=1)
         if row and row["last_day"]
-        else date.fromisoformat(first)
+        else first_day
     )
     if start > end:
+        _backfill_checked_at = now
         return {"status": "ok", "completed": 0, "errors": []}
+    _backfill_checked_at = now
     return backfill_snapshots(start, end)
 
 
 def current_valuation() -> dict:
+    global _current_cache
+    now = time.monotonic()
+    if _current_cache and now - _current_cache[0] < CURRENT_CACHE_TTL_SECONDS:
+        return _current_cache[1]
     securities = _securities_by_id()
     positions = ledger.calculate_positions(date.today())
     active = [
@@ -412,6 +452,24 @@ def current_valuation() -> dict:
     total_value = ZERO
     total_cost = ZERO
     missing = []
+    previous = _previous_valid_snapshot(date.today())
+    previous_values: dict[int, Decimal] = {}
+    today_buy_by_security: dict[int, Decimal] = {}
+    today_sell_by_security: dict[int, Decimal] = {}
+    if previous is not None:
+        with storage.get_connection() as conn:
+            previous_rows = conn.execute(
+                """
+                SELECT security_id, market_value_cny
+                FROM daily_position_snapshots
+                WHERE snapshot_date = ?
+                """,
+                (previous["snapshot_date"],),
+            ).fetchall()
+            previous_values = {
+                row["security_id"]: Decimal(row["market_value_cny"])
+                for row in previous_rows
+            }
     for security in active:
         position = positions[security["id"]]
         quote = quotes[security["id"]]
@@ -434,6 +492,12 @@ def current_valuation() -> dict:
                 "market_value_cny": value,
                 "cost_value_cny": cost,
                 "unrealized_pnl_cny": value - cost,
+                "unrealized_pnl_pct": (
+                    (value - cost) / cost * Decimal("100") if cost else None
+                ),
+                "today_pnl_cny": None,
+                "today_pnl_pct": None,
+                "position_pct": None,
             }
         )
         total_value += value
@@ -447,13 +511,12 @@ def current_valuation() -> dict:
             rate = rates[currency]
         realized += event["realized_pnl_native"] * rate
     unrealized = sum((row["unrealized_pnl_cny"] for row in rows), ZERO)
-    previous = _previous_valid_snapshot(date.today())
     today_buy = ZERO
     today_sell = ZERO
     with storage.get_connection() as conn:
         today_trades = conn.execute(
             """
-            SELECT t.side, t.shares, t.price, s.currency
+            SELECT t.security_id, t.side, t.shares, t.price, s.currency
             FROM trades t JOIN securities s ON s.id = t.security_id
             WHERE t.trade_date = ?
             """,
@@ -467,8 +530,14 @@ def current_valuation() -> dict:
         )
         if trade["side"] == "BUY":
             today_buy += amount
+            today_buy_by_security[trade["security_id"]] = (
+                today_buy_by_security.get(trade["security_id"], ZERO) + amount
+            )
         else:
             today_sell += amount
+            today_sell_by_security[trade["security_id"]] = (
+                today_sell_by_security.get(trade["security_id"], ZERO) + amount
+            )
     today_pnl = (
         total_value
         - Decimal(previous["total_market_value_cny"])
@@ -477,18 +546,51 @@ def current_valuation() -> dict:
         if previous is not None and not missing
         else None
     )
-    return {
+    for row in rows:
+        if total_value:
+            row["position_pct"] = row["market_value_cny"] / total_value * Decimal("100")
+        previous_value = previous_values.get(row["id"])
+        if previous_value is None or missing:
+            continue
+        security_id = row["id"]
+        security_today_pnl = (
+            row["market_value_cny"]
+            - previous_value
+            - today_buy_by_security.get(security_id, ZERO)
+            + today_sell_by_security.get(security_id, ZERO)
+        )
+        row["today_pnl_cny"] = security_today_pnl
+        row["today_pnl_pct"] = (
+            security_today_pnl / previous_value * Decimal("100")
+            if previous_value
+            else None
+        )
+    result = {
         "rows": rows,
         "total_market_value_cny": total_value,
         "total_cost_cny": total_cost,
         "realized_pnl_cny": realized,
         "unrealized_pnl_cny": unrealized,
         "total_pnl_cny": realized + unrealized,
+        "total_pnl_pct": (
+            (realized + unrealized) / total_cost * Decimal("100")
+            if total_cost
+            else None
+        ),
         "today_pnl_cny": today_pnl,
+        "today_pnl_pct": (
+            today_pnl / Decimal(previous["total_market_value_cny"]) * Decimal("100")
+            if today_pnl is not None
+            and previous is not None
+            and Decimal(previous["total_market_value_cny"])
+            else None
+        ),
         "missing": missing,
         "rates": rates,
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+    _current_cache = (now, result)
+    return result
 
 
 def get_daily_returns(start_date: date | None = None, end_date: date | None = None) -> list[dict]:

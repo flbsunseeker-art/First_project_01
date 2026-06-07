@@ -3,7 +3,9 @@ export type Overview = {
   total_market_value_cny?: string | null;
   total_cost_cny?: string | null;
   total_pnl_cny?: string | null;
+  total_pnl_pct?: string | null;
   today_pnl_cny?: string | null;
+  today_pnl_pct?: string | null;
   realized_pnl_cny?: string | null;
   unrealized_pnl_cny?: string | null;
   missing?: string[];
@@ -20,9 +22,15 @@ export type Holding = {
   shares: string;
   average_cost: string;
   latest_price: string | null;
+  change_pct?: string | null;
+  currency: "CNY" | "HKD" | "USD";
   market_value_cny: string;
   cost_value_cny: string;
   unrealized_pnl_cny: string;
+  unrealized_pnl_pct?: string | null;
+  today_pnl_cny?: string | null;
+  today_pnl_pct?: string | null;
+  position_pct?: string | null;
 };
 
 export type Allocation = {
@@ -30,6 +38,12 @@ export type Allocation = {
   market?: string;
   market_value_cny: string;
   position_pct: string;
+};
+
+export type HoldingsSummary = {
+  holdings: Holding[];
+  industry: Allocation[];
+  market: Allocation[];
 };
 
 export type Trade = {
@@ -43,6 +57,15 @@ export type Trade = {
   price: string;
   reason_category?: string;
   note?: string;
+};
+
+export type Security = {
+  id: number;
+  market: "A" | "HK" | "US";
+  code: string;
+  name: string;
+  currency: "CNY" | "HKD" | "USD";
+  industry: string;
 };
 
 export type DailyReturn = {

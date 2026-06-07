@@ -21,7 +21,7 @@
 - Frontend：Next.js + React + TypeScript。
 - Backend：FastAPI + Python。
 - Database：SQLite first，PostgreSQL ready。
-- 当前 Streamlit 实现只作为历史原型和迁移参考，不作为目标产品架构继续扩展。
+- 旧 Streamlit 原型已移出当前项目目录，仅作为本地备份参考；当前仓库只维护新架构。
 
 ## Engineering Principles
 
@@ -82,3 +82,4 @@
 - 每个大 milestone 完成且验证通过后，可以由 Codex 判断是否 push 到远端仓库。
 - push 前需确认当前分支、远端和待推送 commit 范围。
 - 如果用户明确要求暂不同步远端，则只保留本地 commit。
+- 面试演示阶段需要保证 GitHub 远端可拉取完整应用代码；本地 `data/portfolio.db` 仍不随 Git 同步。

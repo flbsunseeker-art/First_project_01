@@ -24,7 +24,12 @@ class IndustryUpdate(BaseModel):
 
 
 class TradePayload(BaseModel):
-    security_id: int
+    security_id: int | None = None
+    market: str | None = None
+    code: str | None = None
+    name: str | None = None
+    currency: str | None = None
+    industry: str = "其他"
     trade_date: date
     side: str
     shares: Decimal
@@ -65,6 +70,22 @@ def _payload_dict(payload: BaseModel) -> dict:
     return payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
 
 
+def _market_allocation(rows: list[dict]) -> list[dict]:
+    grouped: dict[str, Decimal] = {}
+    total = sum((row["market_value_cny"] for row in rows), Decimal("0"))
+    for row in rows:
+        market = row["market"]
+        grouped[market] = grouped.get(market, Decimal("0")) + row["market_value_cny"]
+    return [
+        {
+            "market": market,
+            "market_value_cny": value,
+            "position_pct": value / total * Decimal("100") if total else Decimal("0"),
+        }
+        for market, value in sorted(grouped.items())
+    ]
+
+
 @router.get("/overview", tags=["portfolio"])
 def get_overview() -> dict:
     current = _current()
@@ -74,7 +95,9 @@ def get_overview() -> dict:
             "total_market_value_cny": current["total_market_value_cny"],
             "total_cost_cny": current["total_cost_cny"],
             "total_pnl_cny": current["total_pnl_cny"],
+            "total_pnl_pct": current["total_pnl_pct"],
             "today_pnl_cny": current["today_pnl_cny"],
+            "today_pnl_pct": current["today_pnl_pct"],
             "realized_pnl_cny": current["realized_pnl_cny"],
             "unrealized_pnl_cny": current["unrealized_pnl_cny"],
             "missing": current["missing"],
@@ -88,6 +111,21 @@ def get_holdings() -> list[dict]:
     return _jsonable(_current()["rows"])
 
 
+@router.get("/holdings/summary", tags=["portfolio"])
+def get_holdings_summary() -> dict:
+    from apps.api.services import valuation
+
+    current = _current()
+    rows = current["rows"]
+    return _jsonable(
+        {
+            "holdings": rows,
+            "industry": valuation.get_industry_allocation(rows),
+            "market": _market_allocation(rows),
+        }
+    )
+
+
 @router.get("/holdings/allocation/industry", tags=["portfolio"])
 def get_industry_allocation() -> list[dict]:
     from apps.api.services import valuation
@@ -99,27 +137,16 @@ def get_industry_allocation() -> list[dict]:
 @router.get("/holdings/allocation/market", tags=["portfolio"])
 def get_market_allocation() -> list[dict]:
     rows = _current()["rows"]
-    grouped: dict[str, Decimal] = {}
-    total = sum((row["market_value_cny"] for row in rows), Decimal("0"))
-    for row in rows:
-        market = row["market"]
-        grouped[market] = grouped.get(market, Decimal("0")) + row["market_value_cny"]
-    return _jsonable(
-        [
-            {
-                "market": market,
-                "market_value_cny": value,
-                "position_pct": value / total * Decimal("100") if total else Decimal("0"),
-            }
-            for market, value in sorted(grouped.items())
-        ]
-    )
+    return _jsonable(_market_allocation(rows))
 
 
 @router.patch("/securities/{security_id}/industry", tags=["portfolio"])
 def patch_security_industry(security_id: int, payload: IndustryUpdate) -> dict:
+    from apps.api.services import valuation
+
     try:
         ledger.update_security_industry(security_id, payload.industry)
+        valuation.invalidate_caches()
         return _jsonable(ledger.get_security(security_id))
     except ledger.LedgerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -130,13 +157,38 @@ def get_trades() -> list[dict]:
     return _jsonable(ledger.list_trades())
 
 
+@router.get("/securities", tags=["portfolio"])
+def get_securities(active_only: bool = False) -> list[dict]:
+    return _jsonable(ledger.list_securities(active_only=active_only))
+
+
 @router.post("/trades", tags=["trades"], status_code=201)
 def post_trade(payload: TradePayload) -> dict:
     from apps.api.services import valuation
 
     try:
-        trade_id = ledger.record_trade(**_payload_dict(payload))
+        payload_data = _payload_dict(payload)
+        security_id = payload_data.pop("security_id")
+        market = payload_data.pop("market")
+        code = payload_data.pop("code")
+        name = payload_data.pop("name")
+        currency = payload_data.pop("currency")
+        industry = payload_data.pop("industry")
+        if security_id is None:
+            if not market or not code or not name:
+                raise ledger.LedgerError("新股票需要填写市场、代码和名称")
+            expected_currency = ledger.CURRENCY_BY_MARKET.get(market.strip().upper())
+            if currency and expected_currency and currency != expected_currency:
+                raise ledger.LedgerError("币种需要与所属市场匹配")
+            security_id = ledger.create_security(
+                market=market,
+                code=code,
+                name=name,
+                industry=industry,
+            )
+        trade_id = ledger.record_trade(security_id=security_id, **payload_data)
         valuation.rebuild_from(payload.trade_date)
+        valuation.invalidate_caches()
         return {"id": trade_id, "status": "ok"}
     except ledger.LedgerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -147,8 +199,18 @@ def patch_trade(trade_id: int, payload: TradePayload) -> dict:
     from apps.api.services import valuation
 
     try:
-        ledger.update_trade(trade_id=trade_id, **_payload_dict(payload))
+        payload_data = _payload_dict(payload)
+        security_id = payload_data.pop("security_id")
+        payload_data.pop("market")
+        payload_data.pop("code")
+        payload_data.pop("name")
+        payload_data.pop("currency")
+        payload_data.pop("industry")
+        if security_id is None:
+            raise ledger.LedgerError("交易修改需要指定已有股票")
+        ledger.update_trade(trade_id=trade_id, **payload_data)
         valuation.rebuild_from(payload.trade_date)
+        valuation.invalidate_caches()
         return {"id": trade_id, "status": "ok"}
     except ledger.LedgerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -160,6 +222,7 @@ def delete_trade(trade_id: int) -> dict:
 
     ledger.delete_trade(trade_id)
     valuation.rebuild_from(date.today())
+    valuation.invalidate_caches()
     return {"id": trade_id, "status": "ok"}
 
 
@@ -167,6 +230,7 @@ def delete_trade(trade_id: int) -> dict:
 def get_daily_returns(start_date: date | None = None, end_date: date | None = None) -> list[dict]:
     from apps.api.services import valuation
 
+    valuation.auto_backfill()
     return _jsonable(valuation.get_daily_returns(start_date, end_date))
 
 
@@ -181,6 +245,7 @@ def get_snapshot(snapshot_date: date) -> list[dict]:
 def get_value_trend(start_date: date | None = None, end_date: date | None = None) -> list[dict]:
     from apps.api.services import valuation
 
+    valuation.auto_backfill()
     rows = valuation.get_daily_returns(start_date, end_date)
     return _jsonable(
         [
@@ -226,7 +291,9 @@ def get_data_status() -> dict:
 def post_backfill(payload: BackfillPayload) -> dict:
     from apps.api.services import valuation
 
-    return _jsonable(valuation.backfill_snapshots(payload.start_date, payload.end_date))
+    result = valuation.backfill_snapshots(payload.start_date, payload.end_date)
+    valuation.invalidate_caches()
+    return _jsonable(result)
 
 
 @router.post("/data/backup", tags=["data"])

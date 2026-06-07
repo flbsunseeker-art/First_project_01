@@ -82,12 +82,6 @@ def guess_industry(code: str, name: str = "") -> str:
     return "其他"
 
 
-def _validate_baseline_date(day: str) -> None:
-    baseline = storage.get_setting("portfolio_baseline_date")
-    if baseline and day < baseline:
-        raise LedgerError(f"成交日期不能早于历史基线 {baseline}")
-
-
 def list_securities(active_only: bool = False) -> list[dict]:
     storage.ensure_database()
     sql = "SELECT * FROM securities"
@@ -260,7 +254,6 @@ def record_trade(
     note: str = "",
 ) -> int:
     day = _iso_date(trade_date)
-    _validate_baseline_date(day)
     side = side.strip().upper()
     qty = decimal(shares)
     trade_price = decimal(price)
@@ -314,7 +307,6 @@ def update_trade(
     note: str = "",
 ) -> None:
     day = _iso_date(trade_date)
-    _validate_baseline_date(day)
     side = side.strip().upper()
     qty = decimal(shares)
     trade_price = decimal(price)

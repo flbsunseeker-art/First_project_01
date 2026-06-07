@@ -16,6 +16,8 @@ export PATH="/Applications/Codex.app/Contents/Resources:/opt/homebrew/bin:/usr/l
 has_backend_deps() {
   "$1" - <<'PY' >/dev/null 2>&1
 import fastapi
+import akshare
+import jinja2
 import pandas
 import yfinance
 PY

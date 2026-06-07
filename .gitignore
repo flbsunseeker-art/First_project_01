@@ -11,8 +11,8 @@ venv/
 .vscode/
 .tools/
 portfolio.json
-data/
-backups/
+/data/
+/backups/
 *.db
 *.sqlite
 *.sqlite3
