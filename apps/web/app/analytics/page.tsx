@@ -10,9 +10,12 @@ export const dynamic = "force-dynamic";
 
 async function loadReturns() {
   try {
-    return await apiGet<DailyReturn[]>("/api/v1/analytics/daily-returns");
+    return {
+      isFallback: false,
+      returns: await apiGet<DailyReturn[]>("/api/v1/analytics/daily-returns"),
+    };
   } catch {
-    return fallbackDailyReturns;
+    return { isFallback: true, returns: fallbackDailyReturns };
   }
 }
 
@@ -48,11 +51,13 @@ function monthCells(month: string, returns: DailyReturn[]) {
 export default async function AnalyticsPage({
   searchParams,
 }: Readonly<{ searchParams?: Promise<{ month?: string }> }>) {
-  const returns = await loadReturns();
+  const { isFallback, returns } = await loadReturns();
   const params = await searchParams;
   const month = parseMonth(params?.month, returns);
   const cells = monthCells(month, returns);
   const monthRows = returns.filter((row) => row.snapshot_date.startsWith(month));
+  const latestSnapshot = returns[returns.length - 1]?.snapshot_date;
+  const latestMonthSnapshot = monthRows[monthRows.length - 1]?.snapshot_date;
   const monthPnl = monthRows.reduce((sum, row) => sum + (toNumber(row.daily_pnl_cny) ?? 0), 0);
   const profitDays = monthRows.filter((row) => (toNumber(row.daily_pnl_cny) ?? 0) > 0).length;
   const lossDays = monthRows.filter((row) => (toNumber(row.daily_pnl_cny) ?? 0) < 0).length;
@@ -68,7 +73,13 @@ export default async function AnalyticsPage({
 
         <div className="calendar-headline">
           <div className="calendar-summary">
-            <Badge tone="info">数据状态：已更新</Badge>
+            <Badge tone={isFallback ? undefined : "info"}>
+              {isFallback
+                ? "数据状态：示例数据"
+                : latestSnapshot
+                  ? `快照至 ${latestSnapshot}`
+                  : "暂无快照"}
+            </Badge>
             <Badge tone={monthPnl >= 0 ? "profit" : "loss"}>
               本月累计 {formatMoney(monthPnl, { signed: true })}
             </Badge>
@@ -81,7 +92,11 @@ export default async function AnalyticsPage({
         <Card>
           <div className="section-heading">
             <h2>收益日历</h2>
-            <Badge>{monthRows.length ? `${monthRows.length} 个快照` : "暂无快照"}</Badge>
+            <Badge>
+              {monthRows.length
+                ? `${monthRows.length} 个快照 · 至 ${latestMonthSnapshot}`
+                : "暂无快照"}
+            </Badge>
           </div>
           <div className="weekday-row">
             {["日", "一", "二", "三", "四", "五", "六"].map((day) => (

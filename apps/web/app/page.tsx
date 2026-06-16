@@ -29,8 +29,8 @@ export default async function Home() {
       <main className="dashboard">
         <section className="product-hero">
           <div>
-            <Badge tone="info">Stockpilot</Badge>
-            <h1>Stockpilot</h1>
+            <Badge tone="info">StockPilot</Badge>
+            <h1>StockPilot</h1>
             <p>
               聚合 A 股、港股、美股持仓，统一追踪收益、仓位与行业分布，
               并提供面向市场趋势的持仓洞察。

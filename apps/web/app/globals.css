@@ -845,7 +845,12 @@ td {
   gap: 10px;
 }
 
+.trend-chart-figure {
+  position: relative;
+}
+
 .trend-chart svg {
+  display: block;
   width: 100%;
   min-height: 260px;
   border: 1px solid var(--border-soft);
@@ -891,6 +896,50 @@ td {
 
 .trend-point:hover circle:last-child {
   opacity: 1;
+}
+
+.trend-point.active circle:last-child {
+  opacity: 1;
+}
+
+.trend-hover-zone {
+  cursor: crosshair;
+}
+
+.trend-tooltip {
+  position: absolute;
+  top: var(--tooltip-y);
+  left: var(--tooltip-x);
+  z-index: 2;
+  display: grid;
+  gap: 3px;
+  min-width: 150px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-bright);
+  border-radius: 10px;
+  background: rgba(7, 11, 20, 0.92);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+  transform: translate(-50%, calc(-100% - 10px));
+}
+
+.trend-tooltip.align-left {
+  transform: translate(0, calc(-100% - 10px));
+}
+
+.trend-tooltip.align-right {
+  transform: translate(-100%, calc(-100% - 10px));
+}
+
+.trend-tooltip span {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.trend-tooltip strong {
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .trend-chart-meta,
@@ -974,6 +1023,7 @@ td {
 
 .donut-svg circle:hover,
 .donut-svg circle:focus-visible,
+.donut-svg circle.preview,
 .donut-svg circle.active {
   filter: drop-shadow(0 0 7px rgba(49, 230, 210, 0.62));
   opacity: 1;
@@ -993,14 +1043,18 @@ td {
   text-align: center;
 }
 
-.donut-visual span,
 .donut-visual small {
   color: var(--text-secondary);
   font-size: 0.78rem;
 }
 
 .donut-visual strong {
-  font-size: 0.95rem;
+  max-width: 92%;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 0.92rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .donut-legend {
@@ -1027,6 +1081,7 @@ td {
 
 .donut-legend button:hover,
 .donut-legend button:focus-visible,
+.donut-legend button.preview,
 .donut-legend button.active {
   border-color: var(--border-bright);
   background: rgba(49, 230, 210, 0.08);
