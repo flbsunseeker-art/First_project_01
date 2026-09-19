@@ -10,6 +10,7 @@ venv/
 .idea/
 .vscode/
 .tools/
+.pnpm-store/
 portfolio.json
 /data/
 /backups/

@@ -1,10 +1,9 @@
-"""股票价格和汇率获取模块
+"""实时股票价格和汇率获取模块。
 
-A股/港股数据通过腾讯/新浪接口获取，美股用 yfinance。
+A 股、港股和美股实时行情通过新浪接口获取；历史行情由 market_data 适配层处理。
 """
 
 import requests
-import yfinance as yf
 import re
 
 # 通用请求头
@@ -117,7 +116,8 @@ def get_us_stock_price(code: str) -> dict | None:
 
 def get_exchange_rates() -> dict:
     """获取实时汇率 (USD/CNY, HKD/CNY)"""
-    rates = {"USD_CNY": 7.25, "HKD_CNY": 0.93}
+    rates = {"USD_CNY": 7.25, "HKD_CNY": 0.93, "_status": "fallback"}
+    updated = set()
     try:
         # 通过新浪财经获取汇率
         url = "https://hq.sinajs.cn/list=fx_susdcny,fx_shkdcny"
@@ -134,10 +134,14 @@ def get_exchange_rates() -> dict:
                 if price and price > 0:
                     if "usdcny" in key:
                         rates["USD_CNY"] = price
+                        updated.add("USD_CNY")
                     elif "hkdcny" in key:
                         rates["HKD_CNY"] = price
+                        updated.add("HKD_CNY")
+        if updated == {"USD_CNY", "HKD_CNY"}:
+            rates["_status"] = "live"
     except Exception as e:
-        print(f"获取汇率失败，使用默认值: {e}")
+        print(f"获取汇率失败: {e}")
     return rates
 
 

@@ -5,6 +5,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+from apps.api.adapters import market_data
 from apps.api.domain import ledger
 from apps.api.repositories import storage
 from apps.api.services import csv_io, valuation
@@ -322,6 +323,105 @@ class PortfolioTestCase(unittest.TestCase):
         self.assertEqual(result["status"], "partial")
         self.assertEqual(snapshot["status"], "incomplete")
         self.assertIn("缺少", snapshot["error_message"])
+
+    def test_short_history_gap_triggers_price_and_rate_refresh(self):
+        storage.ensure_database()
+        security_id = ledger.create_security("US", "AAPL", "Apple", "消费电子")
+        self.seed_price(security_id, "2026-01-02", 100)
+        self.seed_price(security_id, "2026-01-08", 101)
+        with storage.get_connection() as conn:
+            conn.executemany(
+                """
+                INSERT INTO exchange_rates
+                    (currency, rate_date, cny_rate, source, status, fetched_at)
+                VALUES ('USD', ?, '7.2', 'test', 'ok', '2026-01-01T00:00:00')
+                """,
+                [("2026-01-02",), ("2026-01-08",)],
+            )
+            conn.commit()
+
+        price_calls = []
+        rate_calls = []
+        original_price_fetch = market_data.fetch_historical_prices
+        original_rate_fetch = market_data.fetch_historical_rates
+        market_data.fetch_historical_prices = (
+            lambda security, start, end: price_calls.append((security["id"], start, end))
+        )
+        market_data.fetch_historical_rates = (
+            lambda currency, start, end: rate_calls.append((currency, start, end))
+        )
+        try:
+            security = ledger.get_security(security_id)
+            market_data.ensure_price_history(
+                [security], date(2026, 1, 2), date(2026, 1, 9)
+            )
+            market_data.ensure_rate_history(
+                {"USD"}, date(2026, 1, 2), date(2026, 1, 9)
+            )
+        finally:
+            market_data.fetch_historical_prices = original_price_fetch
+            market_data.fetch_historical_rates = original_rate_fetch
+
+        self.assertEqual(price_calls[0][2], date(2026, 1, 9))
+        self.assertEqual(rate_calls[0][2], date(2026, 1, 9))
+
+    def test_a_share_etf_history_uses_etf_specific_source(self):
+        import akshare as ak
+
+        original_etf_history = ak.fund_etf_hist_sina
+        original_stock_history = ak.stock_zh_a_hist
+        ak.fund_etf_hist_sina = lambda symbol: market_data.pd.DataFrame(
+            [
+                {"date": "2026-01-01", "close": 1.20},
+                {"date": "2026-01-02", "close": 1.23},
+                {"date": "2026-01-03", "close": 1.25},
+            ]
+        )
+        ak.stock_zh_a_hist = lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("ETF 不应使用普通 A 股历史行情接口")
+        )
+        try:
+            rows = market_data._akshare_history(
+                {"market": "A", "code": "510300"},
+                date(2026, 1, 2),
+                date(2026, 1, 2),
+            )
+        finally:
+            ak.fund_etf_hist_sina = original_etf_history
+            ak.stock_zh_a_hist = original_stock_history
+
+        self.assertEqual(rows, [("2026-01-02", Decimal("1.23"))])
+
+    def test_live_valuation_uses_cached_rates_when_rate_fetch_falls_back(self):
+        storage.ensure_database()
+        security_id = ledger.create_security("US", "AAPL", "Apple", "消费电子")
+        self.seed_price(security_id, "2026-01-09", 100)
+        with storage.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO exchange_rates
+                    (currency, rate_date, cny_rate, source, status, fetched_at)
+                VALUES ('USD', '2026-01-09', '7.2', 'test', 'ok',
+                        '2026-01-09T00:00:00')
+                """
+            )
+            conn.commit()
+
+        original_rate_fetch = market_data.get_exchange_rates
+        original_price_fetch = market_data.fetch_stock_price
+        market_data.get_exchange_rates = lambda: {
+            "USD_CNY": 7.25,
+            "HKD_CNY": 0.93,
+            "_status": "fallback",
+        }
+        market_data.fetch_stock_price = lambda *args, **kwargs: None
+        try:
+            _, rates = market_data.get_live_prices([ledger.get_security(security_id)])
+        finally:
+            market_data.get_exchange_rates = original_rate_fetch
+            market_data.fetch_stock_price = original_price_fetch
+
+        self.assertEqual(rates["USD"], Decimal("7.2"))
 
     def test_industry_allocation_matches_total_value(self):
         rows = [

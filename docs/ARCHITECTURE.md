@@ -408,14 +408,16 @@ PostgreSQL-ready 约束：
 
 目标适配策略：
 
-- A 股历史行情：优先 AkShare。
+- A 股普通股票历史行情：优先 AkShare 股票接口，失败后尝试 yfinance。
+- A 股 ETF 历史行情：优先 AkShare 新浪 ETF 专用接口，避免 yfinance 日线延迟。
 - 港股历史行情：优先 AkShare，失败后尝试 yfinance。
 - 美股历史行情：yfinance。
 - 历史汇率：独立汇率适配器，短期使用 yfinance。
-- 实时行情：统一封装到 market data adapter，不让前端直接调用行情源。
+- 实时行情：新浪接口覆盖 A 股、港股和美股，失败时使用最近可信缓存；前端不直接调用行情源。
 
 缓存策略：
 
+- 当前估值结果缓存 60 秒；持仓或交易变更后主动失效。
 - 历史行情写入 `market_prices`。
 - 汇率写入 `exchange_rates`。
 - 同一区间重复补算幂等。

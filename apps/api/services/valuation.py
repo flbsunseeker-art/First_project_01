@@ -12,7 +12,7 @@ from apps.api.repositories import storage
 
 
 ZERO = Decimal("0")
-CURRENT_CACHE_TTL_SECONDS = 15
+CURRENT_CACHE_TTL_SECONDS = 60
 BACKFILL_CACHE_TTL_SECONDS = 30
 _current_cache: tuple[float, dict] | None = None
 _backfill_checked_at = 0.0
@@ -436,6 +436,7 @@ def current_valuation() -> dict:
     now = time.monotonic()
     if _current_cache and now - _current_cache[0] < CURRENT_CACHE_TTL_SECONDS:
         return _current_cache[1]
+    market_data = _market_data()
     securities = _securities_by_id()
     positions = ledger.calculate_positions(date.today())
     active = [
@@ -444,7 +445,7 @@ def current_valuation() -> dict:
         if position.shares > ZERO
     ]
     if active:
-        quotes, rates = _market_data().get_live_prices(active)
+        quotes, rates = market_data.get_live_prices(active)
     else:
         quotes = {}
         rates = {"CNY": Decimal("1"), "USD": Decimal("0"), "HKD": Decimal("0")}

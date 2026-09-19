@@ -17,6 +17,12 @@ class MarketDataError(RuntimeError):
     pass
 
 
+def _latest_weekday(day: date) -> date:
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    return day
+
+
 def _date_text(value) -> str:
     if hasattr(value, "date"):
         value = value.date()
@@ -54,9 +60,13 @@ def _akshare_history(security: dict, start: date, end: date) -> list[tuple[str, 
 
     start_text = start.strftime("%Y%m%d")
     end_text = end.strftime("%Y%m%d")
-    if security["market"] == "A":
+    code = security["code"]
+    if security["market"] == "A" and code.startswith(("5", "159")):
+        prefix = "sh" if code.startswith("5") else "sz"
+        frame = ak.fund_etf_hist_sina(symbol=f"{prefix}{code}")
+    elif security["market"] == "A":
         frame = ak.stock_zh_a_hist(
-            symbol=security["code"],
+            symbol=code,
             period="daily",
             start_date=start_text,
             end_date=end_text,
@@ -74,13 +84,14 @@ def _akshare_history(security: dict, start: date, end: date) -> list[tuple[str, 
         return []
     if frame is None or frame.empty:
         return []
-    date_col = "日期" if "日期" in frame.columns else frame.columns[0]
-    close_col = "收盘" if "收盘" in frame.columns else "收盘价"
-    return [
-        (_date_text(row[date_col]), Decimal(str(row[close_col])))
-        for _, row in frame.iterrows()
-        if pd.notna(row[close_col])
-    ]
+    date_col = "日期" if "日期" in frame.columns else "date"
+    close_col = "收盘" if "收盘" in frame.columns else "close"
+    rows = []
+    for _, row in frame.iterrows():
+        day = _date_text(row[date_col])
+        if start.isoformat() <= day <= end.isoformat() and pd.notna(row[close_col]):
+            rows.append((day, Decimal(str(row[close_col]))))
+    return rows
 
 
 def _yfinance_symbol(security: dict) -> str:
@@ -140,7 +151,7 @@ def fetch_historical_prices(security: dict, start: date, end: date) -> int:
 def ensure_price_history(securities: list[dict], start: date, end: date) -> None:
     storage.ensure_database()
     fetch_start = start - timedelta(days=10)
-    acceptable_last_day = end - timedelta(days=7)
+    expected_last_day = _latest_weekday(end)
     for security in securities:
         with storage.get_connection() as conn:
             row = conn.execute(
@@ -156,7 +167,7 @@ def ensure_price_history(securities: list[dict], start: date, end: date) -> None
             first_day is None
             or first_day > start
             or last_day is None
-            or last_day < acceptable_last_day
+            or last_day < expected_last_day
         ):
             fetch_historical_prices(security, fetch_start, end)
 
@@ -231,7 +242,7 @@ def fetch_historical_rates(currency: str, start: date, end: date) -> int:
 
 def ensure_rate_history(currencies: set[str], start: date, end: date) -> None:
     storage.ensure_database()
-    acceptable_last_day = end - timedelta(days=7)
+    expected_last_day = _latest_weekday(end)
     for currency in currencies - {"CNY"}:
         with storage.get_connection() as conn:
             row = conn.execute(
@@ -247,7 +258,7 @@ def ensure_rate_history(currencies: set[str], start: date, end: date) -> None:
             first_day is None
             or first_day > start
             or last_day is None
-            or last_day < acceptable_last_day
+            or last_day < expected_last_day
         ):
             fetch_historical_rates(currency, start, end)
 
@@ -272,15 +283,20 @@ def get_cached_rate(currency: str, day: date | str) -> Decimal | None:
 def get_live_prices(securities: list[dict]) -> tuple[dict[int, dict], dict[str, Decimal]]:
     offline = settings.offline_mode
     raw_rates = (
-        {"USD_CNY": 7.25, "HKD_CNY": 0.93}
+        {"_status": "offline"}
         if offline
         else get_exchange_rates()
     )
-    rates = {
-        "CNY": Decimal("1"),
-        "USD": Decimal(str(raw_rates["USD_CNY"])),
-        "HKD": Decimal(str(raw_rates["HKD_CNY"])),
-    }
+    rates = {"CNY": Decimal("1")}
+    required_currencies = {security["currency"] for security in securities}
+    for currency, key in {"USD": "USD_CNY", "HKD": "HKD_CNY"}.items():
+        if currency not in required_currencies:
+            continue
+        live_rate = raw_rates.get(key) if raw_rates.get("_status") == "live" else None
+        rate = Decimal(str(live_rate)) if live_rate else get_cached_rate(currency, date.today())
+        if rate is None:
+            raise MarketDataError(f"缺少 {currency}/CNY 汇率")
+        rates[currency] = rate
     quotes: dict[int, dict] = {}
 
     def fetch_one(security):
