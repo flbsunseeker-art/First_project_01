@@ -4,11 +4,13 @@ import unittest
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from apps.api.adapters import market_data
 from apps.api.domain import ledger
 from apps.api.repositories import storage
-from apps.api.services import csv_io, valuation
+from apps.api.routers import v1
+from apps.api.services import csv_io, funds, valuation
 
 
 class PortfolioTestCase(unittest.TestCase):
@@ -16,8 +18,12 @@ class PortfolioTestCase(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.original_db = storage.DB_FILE
         storage.DB_FILE = Path(self.temp_dir.name) / "portfolio.db"
+        valuation.invalidate_caches()
+        market_data._fund_nav_refresh_at.clear()
 
     def tearDown(self):
+        valuation.invalidate_caches()
+        market_data._fund_nav_refresh_at.clear()
         storage.DB_FILE = self.original_db
         self.temp_dir.cleanup()
 
@@ -89,7 +95,7 @@ class PortfolioTestCase(unittest.TestCase):
             ledger.record_trade(security_id, "2026-01-05", "SELL", 16, 180)
         self.assertEqual(len(ledger.list_trades()), 3)
 
-    def test_schema_v3_migration_preserves_v2_trades(self):
+    def test_current_schema_migration_preserves_v2_trades(self):
         conn = sqlite3.connect(storage.DB_FILE)
         conn.executescript(
             """
@@ -215,7 +221,207 @@ class PortfolioTestCase(unittest.TestCase):
         self.assertEqual(security_count, 1)
         self.assertEqual(opening_count, 1)
         self.assertEqual(snapshot_count, 1)
-        self.assertEqual(schema_version, "3")
+        self.assertEqual(schema_version, "5")
+
+    def test_mutual_fund_opening_position_preserves_exact_cost(self):
+        storage.ensure_database()
+        security_id = ledger.create_security(
+            "FUND",
+            "000001",
+            "测试指数基金",
+            asset_type="MUTUAL_FUND",
+            fund_category="指数基金",
+        )
+        ledger.upsert_opening_position(
+            security_id,
+            "2026-09-19",
+            "2468.13",
+            "5321.47",
+            baseline_value_cny="4987.23",
+        )
+
+        security = ledger.get_security(security_id)
+        opening = ledger.list_opening_positions()[0]
+
+        self.assertEqual(security["market"], "FUND")
+        self.assertEqual(security["asset_type"], "MUTUAL_FUND")
+        self.assertEqual(Decimal(opening["cost_amount"]), Decimal("5321.47"))
+        self.assertEqual(
+            Decimal(opening["average_cost"]),
+            Decimal("5321.47") / Decimal("2468.13"),
+        )
+
+    def test_daily_fund_plan_creates_idempotent_trades_from_nav_dates(self):
+        storage.ensure_database()
+        security_id = ledger.create_security(
+            "FUND", "007721", "天弘标普500", asset_type="MUTUAL_FUND"
+        )
+        plan_id = funds.upsert_plan(security_id, "100", "2026-09-17")
+        self.seed_price(security_id, "2026-09-17", "2")
+        self.seed_price(security_id, "2026-09-18", "2.5")
+
+        first = funds.sync_recurring_investments(refresh_navs=False)
+        second = funds.sync_recurring_investments(refresh_navs=False)
+
+        self.assertEqual(first["created"], 2)
+        self.assertEqual(second["created"], 0)
+        self.assertEqual(len(ledger.list_trades()), 2)
+        position = ledger.calculate_positions("2026-09-18")[security_id]
+        self.assertEqual(position.shares, Decimal("90"))
+        with storage.get_connection() as conn:
+            executions = conn.execute(
+                "SELECT COUNT(*) AS n FROM fund_plan_executions WHERE plan_id = ?",
+                (plan_id,),
+            ).fetchone()["n"]
+        self.assertEqual(executions, 2)
+
+    def test_refreshing_one_fund_does_not_suppress_other_fund_navs(self):
+        first_id = ledger.create_security("FUND", "003547", "鹏华丰禄债券")
+        second_id = ledger.create_security("FUND", "007721", "天弘标普 500")
+        first, second = ledger.get_security(first_id), ledger.get_security(second_id)
+        with patch.object(market_data, "fetch_historical_prices") as fetch:
+            self.assertEqual(market_data.refresh_fund_navs([first]), [])
+            self.assertEqual(market_data.refresh_fund_navs([first, second]), [])
+        self.assertEqual([call.args[0]["id"] for call in fetch.call_args_list], [first_id, second_id])
+
+    def test_fund_plan_waits_for_next_trading_nav_and_rebooks_pending_trade_once(self):
+        fund_id = ledger.create_security("FUND", "003547", "鹏华丰禄债券")
+        paused_id = ledger.create_security("FUND", "007721", "天弘标普500")
+        plan_id = funds.upsert_plan(fund_id, "100", "2026-09-18")
+        funds.upsert_plan(paused_id, "100", "2026-09-18", active=False)
+        self.seed_price(fund_id, "2026-09-18", "1.25")
+        self.seed_price(paused_id, "2026-09-18", "2")
+        with patch.object(funds, "date", wraps=date) as clock:
+            clock.today.return_value = date(2026, 9, 18)
+            self.assertEqual(funds.sync_recurring_investments(False)["created"], 1)
+            trade_id = ledger.list_trades()[0]["id"]
+            with storage.get_connection() as conn:
+                conn.execute(
+                    "UPDATE fund_investment_plans SET confirm_on_next_nav = 1 WHERE id = ?",
+                    (plan_id,),
+                )
+                conn.execute(
+                    "INSERT INTO voided_trades VALUES (?, '待确认', '2026-09-18')",
+                    (trade_id,),
+                )
+                conn.commit()
+            self.seed_price(fund_id, "2026-09-19", "1.30")
+            self.seed_price(fund_id, "2026-09-21", "1.50")
+            clock.today.return_value = date(2026, 9, 20)
+            self.assertEqual(funds.sync_recurring_investments(False)["created"], 0)
+            clock.today.return_value = date(2026, 9, 21)
+            self.assertEqual(funds.sync_recurring_investments(False)["created"], 1)
+            self.assertEqual(funds.sync_recurring_investments(False)["created"], 0)
+
+        trades = ledger.list_trades()
+        self.assertEqual([(t["code"], t["trade_date"]) for t in trades], [("003547", "2026-09-21")])
+        self.assertEqual(Decimal(trades[0]["shares"]), Decimal("80"))
+        self.assertEqual(ledger.calculate_positions("2026-09-18"), {})
+
+    def test_reconciliation_preserves_history_and_excludes_quantity_change_from_profit(self):
+        stock_id = ledger.create_security("A", "600000", "测试股票")
+        ledger.upsert_opening_position(stock_id, "2026-09-17", 10, 800)
+        invalid = ledger.record_trade(stock_id, "2026-09-18", "BUY", 1, 90)
+        self.seed_price(stock_id, "2026-09-17", 90)
+        self.seed_price(stock_id, "2026-09-18", 100)
+        valuation._save_snapshot(valuation.value_portfolio(date(2026, 9, 17)))
+        with storage.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO voided_trades VALUES (?, '未成交', '2026-09-18')", (invalid,)
+            )
+            conn.execute(
+                """INSERT INTO position_reconciliations
+                   (security_id, effective_date, shares, cost_amount, source_note, after_trade_sequence)
+                   VALUES (?, '2026-09-18', '12', '1020', '对账', 1)""",
+                (stock_id,),
+            )
+            conn.commit()
+
+        self.assertEqual(ledger.calculate_positions("2026-09-17")[stock_id].shares, 10)
+        snapshot = valuation.value_portfolio(date(2026, 9, 18))
+        self.assertEqual(snapshot["details"][0]["shares"], 12)
+        self.assertEqual(snapshot["total_cost_cny"], 1020)
+        self.assertEqual(snapshot["external_flow_cny"], 200)
+        self.assertEqual(snapshot["buy_flow_cny"], 0)
+        self.assertEqual(snapshot["daily_pnl_cny"], 100)
+
+        ledger.record_trade(stock_id, "2026-09-18", "SELL", 2, 110)
+        self.assertEqual(ledger.calculate_positions("2026-09-18")[stock_id].shares, 10)
+        self.assertEqual(ledger.realized_events("2026-09-18")[0]["realized_pnl_native"], 50)
+
+    def test_new_fund_baseline_is_not_counted_as_daily_profit(self):
+        storage.ensure_database()
+        stock_id = ledger.create_security("A", "600000", "测试股票", "银行")
+        ledger.record_trade(stock_id, "2026-09-18", "BUY", 10, 100)
+        self.seed_price(stock_id, "2026-09-18", 100)
+        valuation._save_snapshot(valuation.value_portfolio(date(2026, 9, 18)))
+
+        fund_id = ledger.create_security(
+            "FUND", "003547", "鹏华丰禄债券", asset_type="MUTUAL_FUND"
+        )
+        ledger.upsert_opening_position(
+            fund_id,
+            "2026-09-19",
+            400,
+            450,
+            baseline_value_cny=500,
+        )
+        self.seed_price(stock_id, "2026-09-21", 100)
+        self.seed_price(fund_id, "2026-09-21", "1.25")
+
+        snapshot = valuation.value_portfolio(date(2026, 9, 21))
+
+        self.assertEqual(snapshot["total_market_value_cny"], Decimal("1500.00"))
+        self.assertEqual(snapshot["external_flow_cny"], Decimal("500"))
+        self.assertEqual(snapshot["daily_pnl_cny"], Decimal("0.00"))
+
+    def test_asset_value_trends_keep_stocks_and_funds_separate(self):
+        storage.ensure_database()
+        stock_id = ledger.create_security("A", "600000", "测试股票", "银行")
+        fund_id = ledger.create_security(
+            "FUND", "003547", "鹏华丰禄债券", asset_type="MUTUAL_FUND"
+        )
+        ledger.upsert_opening_position(stock_id, "2026-09-18", 10, 100)
+        ledger.upsert_opening_position(fund_id, "2026-09-18", 400, "1.2")
+        self.seed_price(stock_id, "2026-09-18", 100)
+        self.seed_price(fund_id, "2026-09-18", "1.25")
+        valuation._save_snapshot(valuation.value_portfolio(date(2026, 9, 18)))
+
+        stock_trend = valuation.get_asset_value_trend(
+            "stocks", date(2026, 9, 18), date(2026, 9, 18)
+        )
+        fund_trend = valuation.get_asset_value_trend(
+            "funds", date(2026, 9, 18), date(2026, 9, 18)
+        )
+
+        self.assertEqual(stock_trend[0]["total_market_value_cny"], Decimal("1000"))
+        self.assertEqual(fund_trend[0]["total_market_value_cny"], Decimal("500.00"))
+
+    def test_overview_snapshot_reads_without_waiting_on_market_data(self):
+        stock_id = ledger.create_security("A", "600000", "测试股票", "银行")
+        ledger.upsert_opening_position(stock_id, "2026-09-18", 10, 1000)
+        self.seed_price(stock_id, "2026-09-18", 120)
+        valuation._save_snapshot(valuation.value_portfolio(date(2026, 9, 18)))
+        valuation._record_incomplete(date(2026, 9, 21), "行情缺失")
+
+        with (
+            patch.object(v1, "_current") as current,
+            patch.object(valuation, "auto_backfill") as backfill,
+        ):
+            overview = v1.get_overview(snapshot_only=True)
+            self.assertEqual(v1.get_overview(), overview)
+            trend = v1.get_value_trend(asset_group="stocks", snapshot_only=True)
+            current.assert_not_called()
+            backfill.assert_not_called()
+
+        self.assertEqual(overview["status"], "snapshot")
+        self.assertEqual(overview["snapshot_date"], "2026-09-18")
+        self.assertEqual(overview["latest_snapshot"]["snapshot_date"], "2026-09-21")
+        self.assertEqual(overview["total_market_value_cny"], "1200")
+        self.assertEqual(overview["total_cost_cny"], "1000")
+        self.assertEqual(Decimal(overview["total_pnl_pct"]), Decimal("20"))
+        self.assertNotIn("today_pnl_cny", overview)
+        self.assertEqual([row["total_market_value_cny"] for row in trend], ["1200"])
 
     def test_trade_reason_and_note_can_be_saved_and_updated(self):
         storage.ensure_database()
@@ -391,6 +597,31 @@ class PortfolioTestCase(unittest.TestCase):
             ak.stock_zh_a_hist = original_stock_history
 
         self.assertEqual(rows, [("2026-01-02", Decimal("1.23"))])
+
+    def test_mutual_fund_history_uses_nav_source(self):
+        import akshare as ak
+
+        original_fund_history = ak.fund_open_fund_info_em
+        ak.fund_open_fund_info_em = lambda **kwargs: market_data.pd.DataFrame(
+            [
+                {"净值日期": "2026-09-17", "单位净值": 2.1},
+                {"净值日期": "2026-09-18", "单位净值": 2.2},
+            ]
+        )
+        try:
+            rows = market_data._akshare_history(
+                {
+                    "market": "FUND",
+                    "asset_type": "MUTUAL_FUND",
+                    "code": "007721",
+                },
+                date(2026, 9, 18),
+                date(2026, 9, 18),
+            )
+        finally:
+            ak.fund_open_fund_info_em = original_fund_history
+
+        self.assertEqual(rows, [("2026-09-18", Decimal("2.2"))])
 
     def test_live_valuation_uses_cached_rates_when_rate_fetch_falls_back(self):
         storage.ensure_database()

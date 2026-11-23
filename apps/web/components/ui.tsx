@@ -1,12 +1,14 @@
 import type { ReactNode } from "react";
+import { formatMoney } from "../lib/format";
 
 type Tone = "default" | "profit" | "loss" | "info" | "warning";
 
 export function Card({
   children,
   className = "",
-}: Readonly<{ children: ReactNode; className?: string }>) {
-  return <section className={`card ${className}`}>{children}</section>;
+  id,
+}: Readonly<{ children: ReactNode; className?: string; id?: string }>) {
+  return <section className={`card ${className}`} id={id}>{children}</section>;
 }
 
 export function Badge({
@@ -14,6 +16,18 @@ export function Badge({
   tone = "default",
 }: Readonly<{ children: ReactNode; tone?: Tone }>) {
   return <span className={`badge badge-${tone}`}>{children}</span>;
+}
+
+export function Quantity({ value }: { value: string }) {
+  const displayed = formatMoney(value);
+  const fraction = value.split(".")[1] ?? "";
+  const hasExtraPrecision = /[1-9]/.test(fraction.slice(2)) || /e/i.test(value);
+  return hasExtraPrecision ? (
+    <details className="precise-quantity">
+      <summary title="查看原始股数或份额">{displayed}</summary>
+      <small>原始数量 <span>{value}</span></small>
+    </details>
+  ) : displayed;
 }
 
 export function Button({

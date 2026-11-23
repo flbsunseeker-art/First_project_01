@@ -124,11 +124,13 @@ MVP 也可以先保持较轻目录，不必一步到位 monorepo 化，但前后
 ```text
 Security
   id
-  market: A / HK / US
+  market: A / HK / US / FUND
+  asset_type: STOCK / ETF / MUTUAL_FUND
   code
   name
   currency: CNY / HKD / USD
   industry
+  fund_category
   industry_manual
   active
 
@@ -138,6 +140,9 @@ OpeningPosition
   start_date
   shares
   average_cost
+  cost_amount
+  baseline_value_cny
+  source_note
 
 Trade
   id
@@ -186,6 +191,7 @@ DailyPortfolioSnapshot
   unrealized_pnl_cny
   buy_flow_cny
   sell_flow_cny
+  external_flow_cny
   status
   is_final
   error_message
@@ -199,6 +205,22 @@ SyncRun
   end_date
   status
   details
+
+FundInvestmentPlan
+  id
+  security_id
+  amount_cny
+  start_date
+  active
+
+FundPlanExecution
+  plan_id
+  security_id
+  nav_date
+  amount_cny
+  nav
+  shares
+  trade_id
 ```
 
 说明：
@@ -216,6 +238,9 @@ erDiagram
     securities ||--o{ trades : records
     securities ||--o{ market_prices : priced_by
     securities ||--o{ daily_position_snapshots : snapshotted_as
+    securities ||--o| fund_investment_plans : scheduled_by
+    fund_investment_plans ||--o{ fund_plan_executions : produces
+    trades ||--o| fund_plan_executions : records
     daily_portfolio_snapshots ||--o{ daily_position_snapshots : contains
     sync_runs }o--o{ market_prices : fetches
     sync_runs }o--o{ exchange_rates : fetches
@@ -251,7 +276,7 @@ GET /api/v1/holdings/allocation/market
 PATCH /api/v1/securities/{security_id}/industry
 ```
 
-返回当前持仓、行业分布和市场分布。
+返回当前持仓、股票行业分布和资产分布。资产分布按 A 股、港股、美股、场外基金四类聚合，并统一折算为 CNY。
 
 ### 6.3 Trades
 
@@ -268,13 +293,17 @@ GET /api/v1/trades/export
 
 ### 6.4 Analytics
 
+诊断页通过 `GET /api/v1/research/diagnosis?cutoff=YYYY-MM-DD` 读取周报，默认读取最新发布期。读页和发布独立，刷新页面只读归档。新版发布记录保存在账本旁的 `*.research.db`，相同截止日只对应一期。
+
+本地执行 `python -m scripts.publish_diagnosis YYYY-MM-DD` 可查看当期账本扫描。核对公开披露并按 `Analysis` 结构整理诊断后，添加 `--analysis <json 文件>` 校验证据截止日、持仓关联、建议关联和组合归因，然后发布。截止日为北京时间周日。
+
 ```text
 GET /api/v1/analytics/daily-returns
 GET /api/v1/analytics/snapshots/{date}
 GET /api/v1/analytics/value-trend
 ```
 
-支持收益日历、每日盈亏柱状图和总市值趋势。
+支持收益日历、每日盈亏柱状图，以及通过 `asset_group=stocks|funds` 分别查询股票和场外基金市值趋势。
 
 ### 6.5 Data
 
@@ -327,9 +356,10 @@ POST /trades
 
 ```text
 每日盈亏 =
-  当日股票总市值
-  - 上一估值日股票总市值
+  当日资产总市值
+  - 上一估值日资产总市值
   - 当日买入成交金额
+  - 当日新增资产基线金额
   + 当日卖出成交金额
 ```
 
@@ -339,6 +369,8 @@ POST /trades
 
 ```text
 current_valuation()
+  -> refresh mutual-fund NAVs (60-second cache)
+  -> materialize missing fixed-plan purchases idempotently
   -> calculate_positions(today)
   -> fetch live prices / rates
   -> fallback to cached prices if needed
@@ -410,6 +442,7 @@ PostgreSQL-ready 约束：
 
 - A 股普通股票历史行情：优先 AkShare 股票接口，失败后尝试 yfinance。
 - A 股 ETF 历史行情：优先 AkShare 新浪 ETF 专用接口，避免 yfinance 日线延迟。
+- 场外基金净值：AkShare 基金单位净值接口，写入统一 `market_prices` 缓存；不调用 A 股行情接口。
 - 港股历史行情：优先 AkShare，失败后尝试 yfinance。
 - 美股历史行情：yfinance。
 - 历史汇率：独立汇率适配器，短期使用 yfinance。
@@ -418,6 +451,8 @@ PostgreSQL-ready 约束：
 缓存策略：
 
 - 当前估值结果缓存 60 秒；持仓或交易变更后主动失效。
+- 基金净值刷新缓存 60 秒；以净值日期而非抓取时间判断数据新鲜度。
+- 固定定投只在存在对应净值时落账，`(plan_id, nav_date)` 唯一约束保证幂等。
 - 历史行情写入 `market_prices`。
 - 汇率写入 `exchange_rates`。
 - 同一区间重复补算幂等。
@@ -448,6 +483,9 @@ PostgreSQL-ready 约束：
 - 部分卖出已实现盈亏。
 - 超额卖出拒绝。
 - 买入/卖出现金流不误算为市场收益。
+- 新导入基金基线不误算为市场收益。
+- 固定定投重复同步不产生重复交易。
+- 场外基金使用基金净值源并保留净值日期。
 - 补算幂等。
 - 行业分布之和等于总市值。
 - 手动行业修改持久保存。
@@ -486,7 +524,7 @@ API P0：
 
 1. **搭建后端骨架**：FastAPI app、settings、database、health check。
 2. **迁移领域服务**：ledger、valuation、market data、storage。
-3. **补齐数据库迁移**：schema v3、交易理由、备注、data path。
+3. **补齐数据库迁移**：schema v4、资产类型、基金定投、交易理由、备注、data path。
 4. **开放核心 API**：overview、holdings、trades、analytics、data status。
 5. **搭建前端骨架**：Next.js、主题 token、导航、API client。
 6. **实现核心页面**：总览、持仓、交易、收益分析、设置。

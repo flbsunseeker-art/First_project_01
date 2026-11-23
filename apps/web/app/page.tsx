@@ -1,117 +1,65 @@
-import { AppShell } from "../components/app-shell";
-import { TrendDetailList, TrendLineChart } from "../components/charts";
-import { Badge, Card } from "../components/ui";
+import { Suspense } from "react";
+import { LoadingPanel } from "../components/app-shell";
+import { LoadError } from "../components/load-state";
+import { BenchmarkChart, OverviewMetrics, ValueChart } from "../components/overview-panels";
+import { ReturnCalendar } from "../components/return-calendar";
+import { Card } from "../components/ui";
 import { apiGet } from "../lib/api";
-import { fallbackDailyReturns, fallbackOverview } from "../lib/fallback-data";
-import { formatMoney, formatPercent, pnlClass } from "../lib/format";
-import type { DailyReturn, Overview } from "../lib/types";
+import type { BenchmarkComparison, CalendarHistory, Overview, PerformanceHistory } from "../lib/types";
 
 export const dynamic = "force-dynamic";
 
-async function loadOverview() {
-  try {
-    const [overview, trend] = await Promise.all([
-      apiGet<Overview>("/api/v1/overview"),
-      apiGet<DailyReturn[]>("/api/v1/analytics/value-trend?start_date=2026-05-11"),
-    ]);
-    return { overview, trend };
-  } catch {
-    return { overview: fallbackOverview, trend: fallbackDailyReturns };
-  }
+async function Metrics({ history }: { history: Promise<PerformanceHistory | null> }) {
+  const [snapshot, report] = await Promise.all([
+    apiGet<Overview>("/api/v1/overview?snapshot_only=true").catch(() => ({ status: "unavailable" })),
+    history,
+  ]);
+  return <OverviewMetrics snapshot={snapshot} history={report} />;
 }
 
-export default async function Home() {
-  const { overview, trend } = await loadOverview();
-  const latestRows = trend.slice(-7).reverse();
+async function Value({ history }: { history: Promise<PerformanceHistory | null> }) {
+  const report = await history;
+  return report ? <ValueChart history={report} /> : <Card><LoadError message="总市值趋势暂不可用。" /></Card>;
+}
 
+async function Benchmark() {
+  const report = await apiGet<BenchmarkComparison>("/api/v1/analytics/benchmarks")
+    .catch(() => null);
+  return report?.points.length ? <BenchmarkChart comparison={report} /> :
+    <Card className="chart-card">
+      <h2>持仓组合与指数对比</h2>
+      <LoadError message={report ? "指数行情或共同区间数据不足。" : "指数数据暂不可用。"} />
+    </Card>;
+}
+
+type HomeParams = Promise<{ month?: string }>;
+
+async function Returns({ history, searchParams }: {
+  history: Promise<CalendarHistory | null>;
+  searchParams: HomeParams;
+}) {
+  const [report, params] = await Promise.all([history, searchParams]);
+  return report
+    ? <ReturnCalendar history={report} initialMonth={params.month} />
+    : <LoadError message="收益日历暂不可用。" />;
+}
+
+export default function Home({ searchParams }: { searchParams: HomeParams }) {
+  const history = apiGet<CalendarHistory>("/api/v1/analytics/performance?calendar=true").catch(() => null);
   return (
-    <AppShell>
-      <main className="dashboard">
-        <section className="product-hero">
-          <div>
-            <Badge tone="info">StockPilot</Badge>
-            <h1>StockPilot</h1>
-            <p>
-              聚合 A 股、港股、美股持仓，统一追踪收益、仓位与行业分布，
-              并提供面向市场趋势的持仓洞察。
-            </p>
-          </div>
-          <div className="hero-updated">
-            <span>数据更新</span>
-            <strong>{overview.updated_at ?? "等待数据"}</strong>
-          </div>
-        </section>
-
-        <section className="metric-grid" aria-label="portfolio overview">
-          {[
-            { label: "总持仓市值", value: formatMoney(overview.total_market_value_cny), tone: null },
-            { label: "总持仓成本", value: formatMoney(overview.total_cost_cny), tone: null },
-            {
-              label: "累计收益金额",
-              value: formatMoney(overview.total_pnl_cny, { signed: true }),
-              tone: overview.total_pnl_cny,
-            },
-            {
-              label: "累计收益率",
-              value: formatPercent(overview.total_pnl_pct, { signed: true }),
-              tone: overview.total_pnl_pct,
-            },
-            {
-              label: "今日收益金额",
-              value: formatMoney(overview.today_pnl_cny, { signed: true }),
-              tone: overview.today_pnl_cny,
-            },
-            {
-              label: "今日收益率",
-              value: formatPercent(overview.today_pnl_pct, { signed: true }),
-              tone: overview.today_pnl_pct,
-            },
-          ].map((metric) => (
-            <Card className="metric-card" key={metric.label}>
-              <span>{metric.label}</span>
-              <strong className={pnlClass(metric.tone)}>{metric.value}</strong>
-              <small>{overview.updated_at ?? "等待数据"}</small>
-            </Card>
-          ))}
-        </section>
-
-        <Card className="trend-panel">
-          <div className="section-heading">
-            <h2>总市值变化趋势</h2>
-            <Badge>{trend.length ? "2026-05-11 至今" : "No snapshots"}</Badge>
-          </div>
-          <div className="trend-layout">
-            <TrendLineChart rows={trend} />
-            <TrendDetailList rows={latestRows} />
-          </div>
-        </Card>
-
-        <section className="panel-grid">
-          <Card>
-            <div className="section-heading">
-              <h2>数据更新时间</h2>
-              <Badge tone={overview.status === "ok" ? "info" : "warning"}>
-                {overview.status}
-              </Badge>
-            </div>
-            <p>{overview.updated_at ?? "等待数据"}</p>
-          </Card>
-
-          <Card className="side-panel">
-            <div className="section-heading">
-              <h2>数据状态</h2>
-              <Badge tone={overview.status === "ok" ? "info" : "warning"}>
-                {overview.status}
-              </Badge>
-            </div>
-            <p>
-              最新快照：
-              {overview.latest_snapshot?.snapshot_date ?? "暂无"}。
-              缺失行情：{overview.missing?.length ? overview.missing.join("、") : "无"}。
-            </p>
-          </Card>
-        </section>
-      </main>
-    </AppShell>
+    <main className="dashboard">
+      <header className="page-heading home-heading">
+        <h1>持仓总览</h1>
+      </header>
+      <Suspense fallback={<LoadingPanel label="正在读取资产快照…" />}><Metrics history={history} /></Suspense>
+      <Suspense fallback={<LoadingPanel label="正在读取总市值趋势…" />}><Value history={history} /></Suspense>
+      <Suspense fallback={<LoadingPanel label="正在读取指数行情…" />}><Benchmark /></Suspense>
+      <Card className="returns-section" id="returns">
+        <div className="section-heading"><h2>收益日历</h2></div>
+        <Suspense fallback={<LoadingPanel label="正在读取收益日历…" />}>
+          <Returns history={history} searchParams={searchParams} />
+        </Suspense>
+      </Card>
+    </main>
   );
 }

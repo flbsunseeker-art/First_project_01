@@ -10,7 +10,8 @@ from apps.api.repositories import storage
 
 
 ZERO = Decimal("0")
-CURRENCY_BY_MARKET = {"A": "CNY", "HK": "HKD", "US": "USD"}
+CURRENCY_BY_MARKET = {"A": "CNY", "HK": "HKD", "US": "USD", "FUND": "CNY"}
+ASSET_TYPES = {"STOCK", "ETF", "MUTUAL_FUND"}
 INDUSTRY_BY_CODE = {
     "600519": "食品饮料",
     "000333": "家电制造",
@@ -87,7 +88,10 @@ def list_securities(active_only: bool = False) -> list[dict]:
     sql = "SELECT * FROM securities"
     if active_only:
         sql += " WHERE active = 1"
-    sql += " ORDER BY CASE market WHEN 'A' THEN 1 WHEN 'HK' THEN 2 ELSE 3 END, code"
+    sql += (
+        " ORDER BY CASE market WHEN 'A' THEN 1 WHEN 'HK' THEN 2 "
+        "WHEN 'US' THEN 3 ELSE 4 END, code"
+    )
     with storage.get_connection() as conn:
         return [dict(row) for row in conn.execute(sql).fetchall()]
 
@@ -118,12 +122,27 @@ def create_security(
     code: str,
     name: str,
     industry: str = "其他",
+    asset_type: str | None = None,
+    fund_category: str = "",
 ) -> int:
     market = market.strip().upper()
     code = code.strip().upper()
     name = name.strip()
     if market not in CURRENCY_BY_MARKET or not code or not name:
         raise LedgerError("市场、代码和名称不能为空")
+    if asset_type is None:
+        asset_type = (
+            "MUTUAL_FUND"
+            if market == "FUND"
+            else "ETF"
+            if market == "A" and code.startswith(("5", "159"))
+            else "STOCK"
+        )
+    asset_type = asset_type.strip().upper()
+    if asset_type not in ASSET_TYPES:
+        raise LedgerError("资产类型无效")
+    if market == "FUND" and asset_type != "MUTUAL_FUND":
+        raise LedgerError("场外基金必须使用 MUTUAL_FUND 资产类型")
     detected_industry = industry.strip()
     if not detected_industry or detected_industry == "其他":
         detected_industry = guess_industry(code, name)
@@ -133,15 +152,17 @@ def create_security(
         cursor = conn.execute(
             """
             INSERT INTO securities
-                (market, code, name, currency, industry, industry_manual,
-                 active, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                (market, code, name, currency, asset_type, fund_category,
+                 industry, industry_manual, active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             """,
             (
                 market,
                 code,
                 name,
                 CURRENCY_BY_MARKET[market],
+                asset_type,
+                fund_category.strip(),
                 detected_industry,
                 int(bool(industry.strip() and industry.strip() != "其他")),
                 now,
@@ -173,7 +194,8 @@ def list_opening_positions() -> list[dict]:
     with storage.get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT op.*, s.market, s.code, s.name, s.currency, s.industry
+            SELECT op.*, s.market, s.code, s.name, s.currency, s.asset_type,
+                   s.fund_category, s.industry
             FROM opening_positions op
             JOIN securities s ON s.id = op.security_id
             ORDER BY op.start_date, op.id
@@ -182,15 +204,71 @@ def list_opening_positions() -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def upsert_opening_position(
+    security_id: int,
+    start_date: date | str,
+    shares,
+    cost_amount,
+    baseline_value_cny=None,
+    source_note: str = "",
+) -> None:
+    day = _iso_date(start_date)
+    qty = decimal(shares)
+    total_cost = decimal(cost_amount)
+    baseline_value = (
+        decimal(baseline_value_cny) if baseline_value_cny is not None else None
+    )
+    if qty <= ZERO or total_cost < ZERO:
+        raise LedgerError("期初份额必须大于 0，成本金额不能小于 0")
+    average_cost = total_cost / qty
+    now = datetime.now().isoformat(timespec="seconds")
+    storage.ensure_database()
+    with storage.get_connection() as conn:
+        if not conn.execute(
+            "SELECT 1 FROM securities WHERE id = ?", (security_id,)
+        ).fetchone():
+            raise LedgerError("证券不存在")
+        conn.execute(
+            """
+            INSERT INTO opening_positions
+                (security_id, start_date, shares, average_cost, cost_amount,
+                 baseline_value_cny, source_note, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(security_id) DO UPDATE SET
+                start_date = excluded.start_date,
+                shares = excluded.shares,
+                average_cost = excluded.average_cost,
+                cost_amount = excluded.cost_amount,
+                baseline_value_cny = excluded.baseline_value_cny,
+                source_note = excluded.source_note
+            """,
+            (
+                security_id,
+                day,
+                str(qty),
+                str(average_cost),
+                str(total_cost),
+                str(baseline_value) if baseline_value is not None else None,
+                source_note.strip(),
+                now,
+            ),
+        )
+        conn.commit()
+
+
 def _next_sequence(conn, trade_date: str) -> int:
     row = conn.execute(
-        "SELECT COALESCE(MAX(sequence), 0) + 1 AS seq FROM trades WHERE trade_date = ?",
-        (trade_date,),
+        """SELECT COALESCE(MAX(sequence), 0) + 1 AS seq FROM (
+            SELECT sequence FROM trades WHERE trade_date = ?
+            UNION ALL
+            SELECT after_trade_sequence FROM position_reconciliations WHERE effective_date = ?
+        )""",
+        (trade_date, trade_date),
     ).fetchone()
     return int(row["seq"])
 
 
-def _calculate_positions_conn(conn, as_of_date: str) -> dict[int, Position]:
+def _replay_conn(conn, as_of_date: str) -> tuple[dict[int, Position], list[dict], list[tuple]]:
     positions: dict[int, Position] = {}
     openings = conn.execute(
         """
@@ -206,35 +284,60 @@ def _calculate_positions_conn(conn, as_of_date: str) -> dict[int, Position]:
             average_cost=decimal(row["average_cost"]),
         )
 
-    trades = conn.execute(
+    events = conn.execute(
         """
-        SELECT * FROM trades WHERE trade_date <= ?
-        ORDER BY trade_date, sequence, id
+        SELECT t.id AS trade_id, t.security_id, t.trade_date AS day,
+               2 * t.sequence AS event_order, t.side,
+               t.shares, t.price AS amount, s.currency
+        FROM effective_trades t JOIN securities s ON s.id = t.security_id
+        WHERE t.trade_date <= ?
+        UNION ALL
+        SELECT NULL, r.security_id, r.effective_date, 2 * r.after_trade_sequence + 1, 'RECONCILE',
+               r.shares, r.cost_amount, s.currency
+        FROM position_reconciliations r JOIN securities s ON s.id = r.security_id
+        WHERE r.effective_date <= ?
+        ORDER BY day, event_order, trade_id
         """,
-        (as_of_date,),
+        (as_of_date, as_of_date),
     ).fetchall()
-    for trade in trades:
-        security_id = trade["security_id"]
+    realized = []
+    adjustments = []
+    for event in events:
+        security_id = event["security_id"]
         position = positions.setdefault(security_id, Position(security_id))
-        shares = decimal(trade["shares"])
-        price = decimal(trade["price"])
-        if trade["side"] == "BUY":
+        shares = decimal(event["shares"])
+        amount = decimal(event["amount"])
+        if event["side"] == "RECONCILE":
+            delta = shares - position.shares
+            if delta:
+                adjustments.append((security_id, event["day"], event["currency"], delta))
+            position.shares = shares
+            position.average_cost = amount / shares if shares else ZERO
+        elif event["side"] == "BUY":
             new_shares = position.shares + shares
-            total_cost = position.shares * position.average_cost + shares * price
+            total_cost = position.shares * position.average_cost + shares * amount
             position.shares = new_shares
             position.average_cost = total_cost / new_shares
         else:
             if shares > position.shares:
-                raise LedgerError(
-                    f"{trade['trade_date']} 卖出股数超过当时持仓"
-                )
-            position.realized_pnl_native += (
-                price - position.average_cost
-            ) * shares
+                raise LedgerError(f"{event['day']} 卖出股数超过当时持仓")
+            pnl = (amount - position.average_cost) * shares
+            position.realized_pnl_native += pnl
+            realized.append({
+                "trade_id": event["trade_id"],
+                "security_id": security_id,
+                "trade_date": event["day"],
+                "currency": event["currency"],
+                "realized_pnl_native": pnl,
+            })
             position.shares -= shares
             if position.shares == ZERO:
                 position.average_cost = ZERO
-    return positions
+    return positions, realized, adjustments
+
+
+def _calculate_positions_conn(conn, as_of_date: str) -> dict[int, Position]:
+    return _replay_conn(conn, as_of_date)[0]
 
 
 def calculate_positions(as_of_date: date | str | None = None) -> dict[int, Position]:
@@ -319,7 +422,7 @@ def update_trade(
     with storage.get_connection() as conn:
         try:
             exists = conn.execute(
-                "SELECT 1 FROM trades WHERE id = ?", (trade_id,)
+                "SELECT 1 FROM effective_trades WHERE id = ?", (trade_id,)
             ).fetchone()
             if not exists:
                 raise LedgerError("交易不存在")
@@ -367,8 +470,8 @@ def list_trades() -> list[dict]:
     with storage.get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT t.*, s.market, s.code, s.name, s.currency, s.industry
-            FROM trades t JOIN securities s ON s.id = t.security_id
+            SELECT t.*, s.market, s.code, s.name, s.currency, s.industry, s.asset_type
+            FROM effective_trades t JOIN securities s ON s.id = t.security_id
             ORDER BY t.trade_date DESC, t.sequence DESC, t.id DESC
             """
         ).fetchall()
@@ -379,60 +482,8 @@ def realized_events(as_of_date: date | str | None = None) -> list[dict]:
     """Return realized P&L events in the security's native currency."""
     storage.ensure_database()
     day = _iso_date(as_of_date or date.today())
-    events: list[dict] = []
     with storage.get_connection() as conn:
-        securities = {
-            row["id"]: dict(row)
-            for row in conn.execute("SELECT * FROM securities").fetchall()
-        }
-        positions: dict[int, Position] = {}
-        for row in conn.execute(
-            """
-            SELECT security_id, shares, average_cost
-            FROM opening_positions WHERE start_date <= ?
-            """,
-            (day,),
-        ).fetchall():
-            positions[row["security_id"]] = Position(
-                row["security_id"],
-                decimal(row["shares"]),
-                decimal(row["average_cost"]),
-            )
-        trades = conn.execute(
-            """
-            SELECT * FROM trades WHERE trade_date <= ?
-            ORDER BY trade_date, sequence, id
-            """,
-            (day,),
-        ).fetchall()
-        for trade in trades:
-            position = positions.setdefault(
-                trade["security_id"], Position(trade["security_id"])
-            )
-            qty = decimal(trade["shares"])
-            price = decimal(trade["price"])
-            if trade["side"] == "BUY":
-                new_qty = position.shares + qty
-                position.average_cost = (
-                    position.shares * position.average_cost + qty * price
-                ) / new_qty
-                position.shares = new_qty
-                continue
-            pnl = (price - position.average_cost) * qty
-            security = securities[trade["security_id"]]
-            events.append(
-                {
-                    "trade_id": trade["id"],
-                    "security_id": trade["security_id"],
-                    "trade_date": trade["trade_date"],
-                    "currency": security["currency"],
-                    "realized_pnl_native": pnl,
-                }
-            )
-            position.shares -= qty
-            if position.shares == ZERO:
-                position.average_cost = ZERO
-    return events
+        return _replay_conn(conn, day)[1]
 
 
 def earliest_ledger_date() -> str | None:
@@ -443,7 +494,9 @@ def earliest_ledger_date() -> str | None:
             SELECT MIN(day) AS first_day FROM (
                 SELECT start_date AS day FROM opening_positions
                 UNION ALL
-                SELECT trade_date AS day FROM trades
+                SELECT trade_date AS day FROM effective_trades
+                UNION ALL
+                SELECT effective_date AS day FROM position_reconciliations
             )
             """
         ).fetchone()

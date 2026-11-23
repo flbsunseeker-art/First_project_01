@@ -1,117 +1,108 @@
 "use client";
 
-import { useMemo, useState } from "react";
-
-import { formatMoney, formatPercent, pnlClass, toNumber } from "../lib/format";
+import { useRef, useState } from "react";
+import { formatMoney, formatPercent, formatUnitPrice, pnlClass, toNumber } from "../lib/format";
 import type { Holding } from "../lib/types";
+import { Badge, Card, Quantity } from "./ui";
 
-const marketRank: Record<string, number> = { A: 1, HK: 2, US: 3 };
-const marketLabel: Record<string, string> = { A: "A 股", HK: "港股", US: "美股" };
-
-const sortOptions = [
-  { label: "默认市场归类", value: "market_group" },
-  { label: "按市值排序", value: "market_value_cny" },
-  { label: "按累计收益金额排序", value: "unrealized_pnl_cny" },
-  { label: "按累计收益率排序", value: "unrealized_pnl_pct" },
-  { label: "按今日收益排序", value: "today_pnl_cny" },
-  { label: "按仓位占比排序", value: "position_pct" },
+const groups = [
+  { market: "A", title: "A 股（含场内 ETF）" },
+  { market: "HK", title: "港股" },
+  { market: "US", title: "美股" },
+  { market: "FUND", title: "场外基金" },
+];
+const columns = [
+  ["资产名称", 146], ["代码", 87], ["最新市值 CNY", 125],
+  ["累计收益 CNY", 125], ["累计收益率", 105], ["现价 / 净值", 112], ["成本价 / 净值", 112],
+  ["今日收益 CNY", 125], ["今日收益率", 105], ["持仓占比", 96], ["持仓股数 / 份额", 128],
+  ["持仓成本 CNY", 125], ["币种", 58], ["净值 / 行情日期", 150],
+  ["资产类型", 89], ["行业 / 基金分类", 126], ["#", 42],
 ] as const;
+const assetTypes = { STOCK: "股票", ETF: "场内 ETF", MUTUAL_FUND: "场外基金" };
+const sortOptions = [
+  ["按市值排序", "market_value_cny"], ["按累计收益金额排序", "unrealized_pnl_cny"],
+  ["按累计收益率排序", "unrealized_pnl_pct"], ["按今日收益排序", "today_pnl_cny"],
+  ["按仓位占比排序", "position_pct"],
+] as const;
+type SortKey = typeof sortOptions[number][1];
+const tableWidth = columns.reduce((sum, [, width]) => sum + width, 0);
 
-type SortKey = (typeof sortOptions)[number]["value"];
+function Columns() {
+  return <colgroup>{columns.map(([label, width]) => <col key={label} style={{ width }} />)}</colgroup>;
+}
 
-export function HoldingsTable({ holdings }: Readonly<{ holdings: Holding[] }>) {
-  const [sortKey, setSortKey] = useState<SortKey>("market_group");
-  const sorted = useMemo(() => {
-    return [...holdings].sort((a, b) => {
-      if (sortKey === "market_group") {
-        const marketDelta = (marketRank[a.market] ?? 9) - (marketRank[b.market] ?? 9);
-        if (marketDelta !== 0) {
-          return marketDelta;
-        }
-        return (toNumber(b.market_value_cny) ?? Number.NEGATIVE_INFINITY) -
-          (toNumber(a.market_value_cny) ?? Number.NEGATIVE_INFINITY);
-      }
-      return (toNumber(b[sortKey]) ?? Number.NEGATIVE_INFINITY) -
-        (toNumber(a[sortKey]) ?? Number.NEGATIVE_INFINITY);
-    });
-  }, [holdings, sortKey]);
+function Header() {
+  return <thead><tr>{columns.map(([label]) => <th key={label} scope="col">{label}</th>)}</tr></thead>;
+}
 
+function HoldingRow({ row, index }: { row: Holding; index: number }) {
   return (
-    <div className="holdings-table-card">
-      <div className="table-toolbar">
-        <span>共 {holdings.length} 只股票</span>
-        <label>
-          <span>排序</span>
-          <select
-            onChange={(event) => setSortKey(event.target.value as SortKey)}
-            value={sortKey}
-          >
-            {sortOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+    <tr>
+      <th scope="row">{row.name}</th>
+      <td>{row.code}</td>
+      <td>{formatMoney(row.market_value_cny)}</td>
+      <td className={pnlClass(row.unrealized_pnl_cny)}>{formatMoney(row.unrealized_pnl_cny, { signed: true })}</td>
+      <td className={pnlClass(row.unrealized_pnl_pct)}>{formatPercent(row.unrealized_pnl_pct, { signed: true })}</td>
+      <td>{formatUnitPrice(row.latest_price, row.asset_type)}</td>
+      <td className="holding-unit-cost">{formatUnitPrice(row.average_cost, row.asset_type)}</td>
+      <td className={pnlClass(row.today_pnl_cny)}>{formatMoney(row.today_pnl_cny, { signed: true })}</td>
+      <td className={pnlClass(row.today_pnl_pct)}>{formatPercent(row.today_pnl_pct, { signed: true })}</td>
+      <td>{formatPercent(row.position_pct)}</td>
+      <td><Quantity value={row.shares} /></td>
+      <td>{formatMoney(row.cost_value_cny)}</td>
+      <td>{row.currency}</td>
+      <td>{row.price_date ?? "—"}{row.quote_status === "indicative" ? "（参考价）" : ""}</td>
+      <td>{assetTypes[row.asset_type]}</td>
+      <td>{row.asset_type === "MUTUAL_FUND" ? row.fund_category : row.industry}</td>
+      <td>{index + 1}</td>
+    </tr>
+  );
+}
+
+function HoldingsGroup({ market, title, rows }: { market: string; title: string; rows: Holding[] }) {
+  const header = useRef<HTMLDivElement>(null);
+  const titleId = `holding-group-${market}`;
+  return (
+    <Card className="holdings-group">
+      <div className="section-heading"><h2 id={titleId}>{title}</h2><Badge>{rows.length} 项</Badge></div>
+      {rows.length ? (
+        <>
+          <div className="holding-fixed-header" ref={header} aria-hidden="true">
+            <table style={{ width: tableWidth }}><Columns /><Header /></table>
+          </div>
+          <div tabIndex={0} role="region" aria-labelledby={titleId} className="holding-scroll"
+            onScroll={(event) => { if (header.current) header.current.scrollLeft = event.currentTarget.scrollLeft; }}>
+            <table aria-labelledby={titleId} style={{ width: tableWidth }}>
+              <Columns />
+              <Header />
+              <tbody>{rows.map((row, i) => <HoldingRow key={row.id} row={row} index={i} />)}</tbody>
+            </table>
+          </div>
+        </>
+      ) : <p className="muted-copy">暂无持仓</p>}
+    </Card>
+  );
+}
+
+export function HoldingsTable({ holdings }: { holdings: Holding[] }) {
+  const [sort, setSort] = useState<SortKey>("market_value_cny");
+  return (
+    <>
+      <div className="holdings-controls">
+        <span>共 {holdings.length} 项资产</span>
+        <label>各组排序 <select className="period-select" value={sort}
+          onChange={(event) => setSort(event.target.value as SortKey)}>
+          {sortOptions.map(([label, key]) => <option key={key} value={key}>{label}</option>)}
+        </select></label>
       </div>
-      <div className="table-frame holdings-table-frame">
-        <table>
-          <thead>
-            <tr>
-              {[
-                "#",
-                "所属市场",
-                "股票名称",
-                "股票代码",
-                "所属行业",
-                "成本价格",
-                "最新价格",
-                "币种",
-                "持仓股数",
-                "持仓成本 CNY",
-                "最新市值 CNY",
-                "累计收益 CNY",
-                "累计收益率",
-                "今日收益 CNY",
-                "今日收益率",
-                "仓位占比",
-              ].map((column) => (
-                <th key={column}>{column}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map((row, index) => (
-              <tr key={`${row.market}-${row.code}`}>
-                <td>{index + 1}</td>
-                <td>{marketLabel[row.market] ?? row.market}</td>
-                <td>{row.name}</td>
-                <td>{row.code}</td>
-                <td>{row.industry}</td>
-                <td>{formatMoney(row.average_cost)}</td>
-                <td>{formatMoney(row.latest_price)}</td>
-                <td>{row.currency}</td>
-                <td>{formatMoney(row.shares)}</td>
-                <td>{formatMoney(row.cost_value_cny)}</td>
-                <td>{formatMoney(row.market_value_cny)}</td>
-                <td className={pnlClass(row.unrealized_pnl_cny)}>
-                  {formatMoney(row.unrealized_pnl_cny, { signed: true })}
-                </td>
-                <td className={pnlClass(row.unrealized_pnl_pct)}>
-                  {formatPercent(row.unrealized_pnl_pct, { signed: true })}
-                </td>
-                <td className={pnlClass(row.today_pnl_cny)}>
-                  {formatMoney(row.today_pnl_cny, { signed: true })}
-                </td>
-                <td className={pnlClass(row.today_pnl_pct)}>
-                  {formatPercent(row.today_pnl_pct, { signed: true })}
-                </td>
-                <td>{formatPercent(row.position_pct)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
+      {groups.map(({ market, title }) => (
+        <HoldingsGroup key={market} market={market} title={title}
+          rows={holdings.filter((row) => row.market === market).sort((a, b) => {
+            const first = toNumber(a[sort]), second = toNumber(b[sort]);
+            if (first === null || second === null) return first === second ? 0 : first === null ? 1 : -1;
+            return second - first;
+          })} />
+      ))}
+    </>
   );
 }

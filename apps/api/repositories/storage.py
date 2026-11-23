@@ -15,7 +15,7 @@ DATA_DIR = settings.data_dir
 DEFAULT_DB_FILE = DATA_DIR / "portfolio.db"
 LEGACY_DB_FILE = BASE_DIR / "portfolio.db"
 DB_FILE = settings.db_file
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "5"
 HISTORY_BASELINE_DATE = "2026-05-11"
 
 
@@ -142,10 +142,13 @@ def _create_schema(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS securities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            market TEXT NOT NULL CHECK (market IN ('A', 'HK', 'US')),
+            market TEXT NOT NULL CHECK (market IN ('A', 'HK', 'US', 'FUND')),
             code TEXT NOT NULL,
             name TEXT NOT NULL,
             currency TEXT NOT NULL CHECK (currency IN ('CNY', 'HKD', 'USD')),
+            asset_type TEXT NOT NULL DEFAULT 'STOCK'
+                CHECK (asset_type IN ('STOCK', 'ETF', 'MUTUAL_FUND')),
+            fund_category TEXT NOT NULL DEFAULT '',
             industry TEXT NOT NULL DEFAULT '其他',
             industry_manual INTEGER NOT NULL DEFAULT 0,
             active INTEGER NOT NULL DEFAULT 1,
@@ -160,6 +163,9 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             start_date TEXT NOT NULL,
             shares TEXT NOT NULL,
             average_cost TEXT NOT NULL,
+            cost_amount TEXT,
+            baseline_value_cny TEXT,
+            source_note TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             FOREIGN KEY (security_id) REFERENCES securities(id)
         );
@@ -227,6 +233,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             unrealized_pnl_cny TEXT NOT NULL,
             buy_flow_cny TEXT NOT NULL,
             sell_flow_cny TEXT NOT NULL,
+            external_flow_cny TEXT NOT NULL DEFAULT '0',
             status TEXT NOT NULL,
             is_final INTEGER NOT NULL,
             error_message TEXT,
@@ -242,6 +249,55 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL,
             details TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS fund_investment_plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            security_id INTEGER NOT NULL UNIQUE,
+            amount_cny TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (security_id) REFERENCES securities(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS fund_plan_executions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_id INTEGER NOT NULL,
+            security_id INTEGER NOT NULL,
+            nav_date TEXT NOT NULL,
+            effective_date TEXT NOT NULL,
+            amount_cny TEXT NOT NULL,
+            nav TEXT NOT NULL,
+            shares TEXT NOT NULL,
+            trade_id INTEGER NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            UNIQUE (plan_id, nav_date),
+            FOREIGN KEY (plan_id) REFERENCES fund_investment_plans(id),
+            FOREIGN KEY (security_id) REFERENCES securities(id),
+            FOREIGN KEY (trade_id) REFERENCES trades(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS position_reconciliations (
+            security_id INTEGER NOT NULL REFERENCES securities(id),
+            effective_date TEXT NOT NULL,
+            shares TEXT NOT NULL,
+            cost_amount TEXT NOT NULL,
+            source_note TEXT NOT NULL,
+            after_trade_sequence INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (security_id, effective_date)
+        );
+
+        CREATE TABLE IF NOT EXISTS voided_trades (
+            trade_id INTEGER PRIMARY KEY REFERENCES trades(id),
+            reason TEXT NOT NULL,
+            voided_at TEXT NOT NULL
+        );
+
+        CREATE VIEW IF NOT EXISTS effective_trades AS
+        SELECT t.* FROM trades t
+        WHERE NOT EXISTS (SELECT 1 FROM voided_trades v WHERE v.trade_id = t.id);
         """
     )
 
@@ -249,12 +305,90 @@ def _create_schema(conn: sqlite3.Connection) -> None:
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     if not _table_exists(conn, "trades"):
         return
+    if not _column_exists(conn, "securities", "asset_type"):
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE securities_v4 (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    market TEXT NOT NULL
+                        CHECK (market IN ('A', 'HK', 'US', 'FUND')),
+                    code TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    currency TEXT NOT NULL
+                        CHECK (currency IN ('CNY', 'HKD', 'USD')),
+                    asset_type TEXT NOT NULL DEFAULT 'STOCK'
+                        CHECK (asset_type IN ('STOCK', 'ETF', 'MUTUAL_FUND')),
+                    fund_category TEXT NOT NULL DEFAULT '',
+                    industry TEXT NOT NULL DEFAULT '其他',
+                    industry_manual INTEGER NOT NULL DEFAULT 0,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (market, code)
+                );
+
+                INSERT INTO securities_v4
+                    (id, market, code, name, currency, asset_type,
+                     fund_category, industry, industry_manual, active,
+                     created_at, updated_at)
+                SELECT id, market, code, name, currency,
+                       CASE
+                           WHEN market = 'A'
+                                AND (code LIKE '5%' OR code LIKE '159%')
+                           THEN 'ETF'
+                           ELSE 'STOCK'
+                       END,
+                       '', industry, industry_manual, active,
+                       created_at, updated_at
+                FROM securities;
+
+                DROP TABLE securities;
+                ALTER TABLE securities_v4 RENAME TO securities;
+                """
+            )
+            conn.commit()
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
     if not _column_exists(conn, "trades", "reason_category"):
         conn.execute(
             "ALTER TABLE trades ADD COLUMN reason_category TEXT NOT NULL DEFAULT ''"
         )
     if not _column_exists(conn, "trades", "note"):
         conn.execute("ALTER TABLE trades ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+    if not _column_exists(conn, "opening_positions", "cost_amount"):
+        conn.execute("ALTER TABLE opening_positions ADD COLUMN cost_amount TEXT")
+    if not _column_exists(conn, "opening_positions", "baseline_value_cny"):
+        conn.execute(
+            "ALTER TABLE opening_positions ADD COLUMN baseline_value_cny TEXT"
+        )
+    if not _column_exists(conn, "opening_positions", "source_note"):
+        conn.execute(
+            "ALTER TABLE opening_positions "
+            "ADD COLUMN source_note TEXT NOT NULL DEFAULT ''"
+        )
+    if not _column_exists(conn, "daily_portfolio_snapshots", "external_flow_cny"):
+        conn.execute(
+            "ALTER TABLE daily_portfolio_snapshots "
+            "ADD COLUMN external_flow_cny TEXT NOT NULL DEFAULT '0'"
+        )
+    if not _column_exists(conn, "fund_investment_plans", "confirm_on_next_nav"):
+        conn.execute(
+            "ALTER TABLE fund_investment_plans "
+            "ADD COLUMN confirm_on_next_nav INTEGER NOT NULL DEFAULT 0"
+        )
+    if not _column_exists(conn, "position_reconciliations", "after_trade_sequence"):
+        conn.execute(
+            "ALTER TABLE position_reconciliations "
+            "ADD COLUMN after_trade_sequence INTEGER NOT NULL DEFAULT 0"
+        )
+        conn.execute(
+            """UPDATE position_reconciliations AS r SET after_trade_sequence = (
+                SELECT COALESCE(MAX(t.sequence), 0) FROM trades t WHERE t.trade_date = r.effective_date
+            )"""
+        )
 
 
 def _migrate_legacy_holdings(conn: sqlite3.Connection) -> int:
@@ -315,6 +449,8 @@ def _migrate_legacy_holdings(conn: sqlite3.Connection) -> int:
 
 
 def _ensure_history_baseline(conn: sqlite3.Connection) -> Path | None:
+    if _metadata(conn, "history_baseline_migrated") == "1":
+        return None
     current = _metadata(conn, "portfolio_baseline_date")
     needs_metadata = current is None or current > HISTORY_BASELINE_DATE
     row = conn.execute(
@@ -327,6 +463,7 @@ def _ensure_history_baseline(conn: sqlite3.Connection) -> Path | None:
     ).fetchone()
     needs_positions = bool(row and row["n"])
     if not needs_metadata and not needs_positions:
+        _set_metadata(conn, "history_baseline_migrated", "1")
         return None
 
     backup = _backup_before_history_baseline(conn)
@@ -339,6 +476,7 @@ def _ensure_history_baseline(conn: sqlite3.Connection) -> Path | None:
         (HISTORY_BASELINE_DATE, HISTORY_BASELINE_DATE),
     )
     _set_metadata(conn, "portfolio_baseline_date", HISTORY_BASELINE_DATE)
+    _set_metadata(conn, "history_baseline_migrated", "1")
     return backup
 
 

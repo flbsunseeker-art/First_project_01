@@ -7,6 +7,7 @@ import time
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
+from apps.api.core.market_time import portfolio_closed_through
 from apps.api.domain import ledger
 from apps.api.repositories import storage
 
@@ -42,24 +43,36 @@ def _securities_by_id() -> dict[int, dict]:
     return {item["id"]: item for item in ledger.list_securities()}
 
 
-def _trade_flows(day: date) -> tuple[Decimal, Decimal]:
+def _trade_flows(
+    day: date, since: date | None = None
+) -> tuple[Decimal, Decimal]:
     market_data = _market_data()
     buy = ZERO
     sell = ZERO
     with storage.get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT t.side, t.shares, t.price, s.currency
-            FROM trades t JOIN securities s ON s.id = t.security_id
-            WHERE t.trade_date = ?
-            """,
-            (day.isoformat(),),
-        ).fetchall()
+        if since is None:
+            rows = conn.execute(
+                """
+                SELECT t.side, t.shares, t.price, s.currency, t.trade_date
+                FROM effective_trades t JOIN securities s ON s.id = t.security_id
+                WHERE t.trade_date = ?
+                """,
+                (day.isoformat(),),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT t.side, t.shares, t.price, s.currency, t.trade_date
+                FROM effective_trades t JOIN securities s ON s.id = t.security_id
+                WHERE t.trade_date > ? AND t.trade_date <= ?
+                """,
+                (since.isoformat(), day.isoformat()),
+            ).fetchall()
     for row in rows:
-        rate = market_data.get_cached_rate(row["currency"], day)
+        rate = market_data.get_cached_rate(row["currency"], row["trade_date"])
         if rate is None:
             raise market_data.MarketDataError(
-                f"{day.isoformat()} 缺少 {row['currency']}/CNY 汇率"
+                f"{row['trade_date']} 缺少 {row['currency']}/CNY 汇率"
             )
         amount = Decimal(row["shares"]) * Decimal(row["price"]) * rate
         if row["side"] == "BUY":
@@ -67,6 +80,63 @@ def _trade_flows(day: date) -> tuple[Decimal, Decimal]:
         else:
             sell += amount
     return buy, sell
+
+
+def _external_flows_by_security(
+    conn, day: date, since: date | None = None, current_marks: dict | None = None
+) -> dict[int, Decimal]:
+    clauses = ["baseline_value_cny IS NOT NULL", "start_date <= ?"]
+    params = [day.isoformat()]
+    if since is not None:
+        clauses.append("start_date > ?")
+        params.append(since.isoformat())
+    values = {
+        sid: Decimal(amount)
+        for sid, amount in conn.execute(
+            f"SELECT security_id, baseline_value_cny FROM opening_positions "
+            f"WHERE {' AND '.join(clauses)}",
+            params,
+        )
+    }
+    start = since.isoformat() if since is not None else ""
+    end = day.isoformat()
+    if not conn.execute(
+        "SELECT 1 FROM position_reconciliations WHERE effective_date > ? AND effective_date <= ?",
+        (start, end),
+    ).fetchone():
+        return values
+
+    for sid, effective_date, currency, delta in ledger._replay_conn(conn, end)[2]:
+        if effective_date <= start:
+            continue
+        mark = (current_marks or {}).get(sid) if effective_date == end else None
+        if mark is None:
+            quote = conn.execute(
+                """SELECT close_price FROM market_prices
+                   WHERE security_id = ? AND price_date <= ? AND status IN ('ok', 'indicative')
+                   ORDER BY price_date DESC LIMIT 1""",
+                (sid, effective_date),
+            ).fetchone()
+            price = Decimal(quote[0]) if quote else None
+            rate = Decimal("1") if currency == "CNY" else None
+            if rate is None:
+                fx = conn.execute(
+                    """SELECT cny_rate FROM exchange_rates WHERE currency = ? AND rate_date <= ?
+                       ORDER BY rate_date DESC LIMIT 1""",
+                    (currency, effective_date),
+                ).fetchone()
+                rate = Decimal(fx[0]) if fx else None
+        else:
+            price, rate = mark
+        if price is None or rate is None:
+            raise _market_data().MarketDataError(f"{effective_date} 缺少持仓校准行情或汇率 ({sid})")
+        values[sid] = values.get(sid, ZERO) + delta * price * rate
+    return values
+
+
+def _external_flows(day: date, since: date | None = None) -> Decimal:
+    with storage.get_connection() as conn:
+        return sum(_external_flows_by_security(conn, day, since).values(), ZERO)
 
 
 def _realized_pnl_cny(day: date) -> Decimal:
@@ -104,8 +174,11 @@ def _has_valuation_activity(day: date) -> bool:
     ]
     with storage.get_connection() as conn:
         trade = conn.execute(
-            "SELECT 1 FROM trades WHERE trade_date = ? LIMIT 1",
-            (day.isoformat(),),
+            """SELECT 1 FROM effective_trades WHERE trade_date = ?
+               UNION ALL
+               SELECT 1 FROM position_reconciliations WHERE effective_date = ?
+               LIMIT 1""",
+            (day.isoformat(), day.isoformat()),
         ).fetchone()
         if trade:
             return True
@@ -165,9 +238,13 @@ def value_portfolio(valuation_date: date) -> dict:
         total_cost += cost_value
         unrealized += pnl
 
-    realized = _realized_pnl_cny(valuation_date)
-    buy_flow, sell_flow = _trade_flows(valuation_date)
     previous = _previous_valid_snapshot(valuation_date)
+    previous_date = (
+        date.fromisoformat(previous["snapshot_date"]) if previous is not None else None
+    )
+    realized = _realized_pnl_cny(valuation_date)
+    buy_flow, sell_flow = _trade_flows(valuation_date, previous_date)
+    external_flow = _external_flows(valuation_date, previous_date)
     if previous is None:
         daily_pnl = None
         cumulative = ZERO
@@ -176,6 +253,7 @@ def value_portfolio(valuation_date: date) -> dict:
             total_value
             - Decimal(previous["total_market_value_cny"])
             - buy_flow
+            - external_flow
             + sell_flow
         )
         cumulative = Decimal(previous["cumulative_pnl_cny"]) + daily_pnl
@@ -191,6 +269,7 @@ def value_portfolio(valuation_date: date) -> dict:
         "unrealized_pnl_cny": unrealized,
         "buy_flow_cny": buy_flow,
         "sell_flow_cny": sell_flow,
+        "external_flow_cny": external_flow,
     }
 
 
@@ -228,9 +307,9 @@ def _save_snapshot(snapshot: dict, is_final: bool = True) -> None:
             INSERT INTO daily_portfolio_snapshots
                 (snapshot_date, total_market_value_cny, daily_pnl_cny,
                  cumulative_pnl_cny, realized_pnl_cny, unrealized_pnl_cny,
-                 buy_flow_cny, sell_flow_cny, status, is_final,
+                 buy_flow_cny, sell_flow_cny, external_flow_cny, status, is_final,
                  error_message, calculated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ok', ?, NULL, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', ?, NULL, ?)
             ON CONFLICT(snapshot_date) DO UPDATE SET
                 total_market_value_cny = excluded.total_market_value_cny,
                 daily_pnl_cny = excluded.daily_pnl_cny,
@@ -239,6 +318,7 @@ def _save_snapshot(snapshot: dict, is_final: bool = True) -> None:
                 unrealized_pnl_cny = excluded.unrealized_pnl_cny,
                 buy_flow_cny = excluded.buy_flow_cny,
                 sell_flow_cny = excluded.sell_flow_cny,
+                external_flow_cny = excluded.external_flow_cny,
                 status = excluded.status,
                 is_final = excluded.is_final,
                 error_message = NULL,
@@ -257,6 +337,7 @@ def _save_snapshot(snapshot: dict, is_final: bool = True) -> None:
                 str(snapshot["unrealized_pnl_cny"]),
                 str(snapshot["buy_flow_cny"]),
                 str(snapshot["sell_flow_cny"]),
+                str(snapshot["external_flow_cny"]),
                 int(is_final),
                 now,
             ),
@@ -294,7 +375,12 @@ def _record_incomplete(day: date, message: str) -> None:
         conn.commit()
 
 
-def backfill_snapshots(start_date: date, end_date: date) -> dict:
+def backfill_snapshots(
+    start_date: date, end_date: date, *, refresh_market_data: bool = True
+) -> dict:
+    end_date = min(end_date, portfolio_closed_through())
+    if start_date > end_date:
+        return {"status": "ok", "completed": 0, "errors": []}
     market_data = _market_data()
     storage.ensure_database()
     securities = ledger.list_securities(active_only=True)
@@ -314,7 +400,7 @@ def backfill_snapshots(start_date: date, end_date: date) -> dict:
     errors: list[str] = []
     completed = 0
     try:
-        if securities and start_date <= end_date:
+        if refresh_market_data and securities and start_date <= end_date:
             market_data.ensure_price_history(securities, start_date, end_date)
             market_data.ensure_rate_history(currencies, start_date, end_date)
         for day in _days(start_date, end_date):
@@ -355,7 +441,7 @@ def rebuild_from(start_date: date | str) -> dict:
     start = (
         start_date if isinstance(start_date, date) else date.fromisoformat(start_date)
     )
-    end = date.today() - timedelta(days=1)
+    end = portfolio_closed_through()
     with storage.get_connection() as conn:
         conn.execute(
             "DELETE FROM daily_position_snapshots WHERE snapshot_date >= ?",
@@ -371,7 +457,7 @@ def rebuild_from(start_date: date | str) -> dict:
     return backfill_snapshots(start, end)
 
 
-def auto_backfill() -> dict:
+def auto_backfill(*, repair_history: bool = True) -> dict:
     global _backfill_checked_at
     now = time.monotonic()
     if now - _backfill_checked_at < BACKFILL_CACHE_TTL_SECONDS:
@@ -386,7 +472,7 @@ def auto_backfill() -> dict:
         storage.HISTORY_BASELINE_DATE,
     ) or storage.HISTORY_BASELINE_DATE
     first = min(first, baseline)
-    end = date.today() - timedelta(days=1)
+    end = portfolio_closed_through()
     with storage.get_connection() as conn:
         row = conn.execute(
             """
@@ -408,13 +494,13 @@ def auto_backfill() -> dict:
             """,
             (end.isoformat(),),
         ).fetchone()
-    if incomplete and incomplete["first_incomplete"]:
+    if repair_history and incomplete and incomplete["first_incomplete"]:
         start = date.fromisoformat(incomplete["first_incomplete"])
         if start <= end:
             _backfill_checked_at = now
             return rebuild_from(start)
     first_day = date.fromisoformat(first)
-    if first_ok and first_ok["first_day"]:
+    if repair_history and first_ok and first_ok["first_day"]:
         earliest_ok = date.fromisoformat(first_ok["first_day"])
         if first_day < earliest_ok:
             _backfill_checked_at = now
@@ -431,21 +517,46 @@ def auto_backfill() -> dict:
     return backfill_snapshots(start, end)
 
 
-def current_valuation() -> dict:
+def sync_installments() -> None:
+    from apps.api.services import funds
+
+    sync_result = funds.sync_recurring_investments()
+    if sync_result["earliest_date"]:
+        invalidate_caches()
+        rebuild_from(sync_result["earliest_date"])
+
+
+def latest_current_valuation() -> dict | None:
+    cached = _current_cache
+    return cached[1] if cached else None
+
+
+def current_valuation(
+    *, cached_only: bool = False, refresh_funds: bool = True, force_refresh: bool = False
+) -> dict:
     global _current_cache
     now = time.monotonic()
-    if _current_cache and now - _current_cache[0] < CURRENT_CACHE_TTL_SECONDS:
+    if (not cached_only and not force_refresh and _current_cache
+            and now - _current_cache[0] < CURRENT_CACHE_TTL_SECONDS):
         return _current_cache[1]
+    if not cached_only and refresh_funds:
+        sync_installments()
     market_data = _market_data()
+    day = date.today()
     securities = _securities_by_id()
-    positions = ledger.calculate_positions(date.today())
+    positions = ledger.calculate_positions(day)
     active = [
         securities[security_id]
         for security_id, position in positions.items()
         if position.shares > ZERO
     ]
-    if active:
-        quotes, rates = market_data.get_live_prices(active)
+    warnings: list[str] = []
+    if cached_only:
+        quotes, rates = market_data.get_cached_marks(active, day)
+    elif active:
+        quotes, rates = market_data.get_live_prices(
+            active, refresh_navs=refresh_funds, warnings=warnings
+        )
     else:
         quotes = {}
         rates = {"CNY": Decimal("1"), "USD": Decimal("0"), "HKD": Decimal("0")}
@@ -453,7 +564,12 @@ def current_valuation() -> dict:
     total_value = ZERO
     total_cost = ZERO
     missing = []
-    previous = _previous_valid_snapshot(date.today())
+    precise_today = day.weekday() < 5 and all(
+        quotes[item["id"]]["price_date"] == day.isoformat()
+        and quotes[item["id"]]["status"] != "indicative"
+        for item in active
+    )
+    previous = _previous_valid_snapshot(day) if precise_today else None
     previous_values: dict[int, Decimal] = {}
     today_buy_by_security: dict[int, Decimal] = {}
     today_sell_by_security: dict[int, Decimal] = {}
@@ -475,10 +591,10 @@ def current_valuation() -> dict:
         position = positions[security["id"]]
         quote = quotes[security["id"]]
         price = quote["price"]
-        if price is None:
+        rate = rates.get(security["currency"])
+        if price is None or rate is None:
             missing.append(security["name"])
             continue
-        rate = rates[security["currency"]]
         value = position.shares * price * rate
         cost = position.shares * position.average_cost * rate
         rows.append(
@@ -489,12 +605,13 @@ def current_valuation() -> dict:
                 "latest_price": price,
                 "change_pct": quote["change_pct"],
                 "quote_status": quote["status"],
+                "price_date": quote.get("price_date"),
                 "cny_rate": rate,
                 "market_value_cny": value,
                 "cost_value_cny": cost,
                 "unrealized_pnl_cny": value - cost,
                 "unrealized_pnl_pct": (
-                    (value - cost) / cost * Decimal("100") if cost else None
+                    (value - cost) / cost * Decimal("100") if cost > ZERO else None
                 ),
                 "today_pnl_cny": None,
                 "today_pnl_pct": None,
@@ -505,29 +622,44 @@ def current_valuation() -> dict:
         total_cost += cost
 
     realized = ZERO
-    for event in ledger.realized_events(date.today()):
+    for event in ledger.realized_events(day):
         currency = event["currency"]
         rate = market_data.get_cached_rate(currency, event["trade_date"])
         if rate is None:
-            rate = rates[currency]
+            rate = rates.get(currency)
+        if rate is None:
+            missing.append(f"{currency}/CNY 汇率")
+            continue
         realized += event["realized_pnl_native"] * rate
     unrealized = sum((row["unrealized_pnl_cny"] for row in rows), ZERO)
     today_buy = ZERO
     today_sell = ZERO
+    previous_date = (
+        date.fromisoformat(previous["snapshot_date"]) if previous is not None else None
+    )
     with storage.get_connection() as conn:
-        today_trades = conn.execute(
-            """
-            SELECT t.security_id, t.side, t.shares, t.price, s.currency
-            FROM trades t JOIN securities s ON s.id = t.security_id
-            WHERE t.trade_date = ?
-            """,
-            (date.today().isoformat(),),
-        ).fetchall()
+        if previous_date is None:
+            today_trades = []
+        else:
+            today_trades = conn.execute(
+                """
+                SELECT t.security_id, t.side, t.shares, t.price, s.currency,
+                       t.trade_date
+                FROM effective_trades t JOIN securities s ON s.id = t.security_id
+                WHERE t.trade_date > ? AND t.trade_date <= ?
+                """,
+                (previous_date.isoformat(), date.today().isoformat()),
+            ).fetchall()
     for trade in today_trades:
         amount = (
             Decimal(trade["shares"])
             * Decimal(trade["price"])
-            * rates[trade["currency"]]
+            * (
+                market_data.get_cached_rate(
+                    trade["currency"], trade["trade_date"]
+                )
+                or rates[trade["currency"]]
+            )
         )
         if trade["side"] == "BUY":
             today_buy += amount
@@ -539,16 +671,25 @@ def current_valuation() -> dict:
             today_sell_by_security[trade["security_id"]] = (
                 today_sell_by_security.get(trade["security_id"], ZERO) + amount
             )
+    external_by_security = {}
+    if previous is not None and not missing:
+        marks = {row["id"]: (row["latest_price"], row["cny_rate"]) for row in rows}
+        with storage.get_connection() as conn:
+            external_by_security = _external_flows_by_security(
+                conn, date.today(), previous_date, marks
+            )
+    external_flow = sum(external_by_security.values(), ZERO)
     today_pnl = (
         total_value
         - Decimal(previous["total_market_value_cny"])
         - today_buy
+        - external_flow
         + today_sell
         if previous is not None and not missing
         else None
     )
     for row in rows:
-        if total_value:
+        if total_value and not missing:
             row["position_pct"] = row["market_value_cny"] / total_value * Decimal("100")
         previous_value = previous_values.get(row["id"])
         if previous_value is None or missing:
@@ -559,6 +700,7 @@ def current_valuation() -> dict:
             - previous_value
             - today_buy_by_security.get(security_id, ZERO)
             + today_sell_by_security.get(security_id, ZERO)
+            - external_by_security.get(security_id, ZERO)
         )
         row["today_pnl_cny"] = security_today_pnl
         row["today_pnl_pct"] = (
@@ -587,10 +729,21 @@ def current_valuation() -> dict:
             else None
         ),
         "missing": missing,
+        "warnings": warnings,
         "rates": rates,
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
-    _current_cache = (now, result)
+    result["unvalued"] = [
+        {
+            **item, "shares": positions[item["id"]].shares,
+            "average_cost": positions[item["id"]].average_cost,
+            "latest_price": None, "cost_value_cny": None, "market_value_cny": None,
+            "unrealized_pnl_cny": None, "quote_status": "missing",
+        }
+        for item in active if quotes[item["id"]]["price"] is None or item["currency"] not in rates
+    ]
+    if not cached_only:
+        _current_cache = (now, result)
     return result
 
 
@@ -616,7 +769,57 @@ def get_daily_returns(start_date: date | None = None, end_date: date | None = No
     return [dict(row) for row in rows]
 
 
+def get_asset_value_trend(
+    asset_group: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> list[dict]:
+    if asset_group not in {"stocks", "funds"}:
+        raise ValueError("asset_group must be stocks or funds")
+    clauses = []
+    params: list[str] = []
+    if start_date:
+        clauses.append("dps.snapshot_date >= ?")
+        params.append(start_date.isoformat())
+    if end_date:
+        clauses.append("dps.snapshot_date <= ?")
+        params.append(end_date.isoformat())
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with storage.get_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT dps.snapshot_date, dps.market_value_cny, s.asset_type
+            FROM daily_position_snapshots dps
+            JOIN securities s ON s.id = dps.security_id
+            {where}
+            ORDER BY dps.snapshot_date, dps.security_id
+            """,
+            params,
+        ).fetchall()
+
+    totals: dict[str, Decimal] = {}
+    for row in rows:
+        is_fund = row["asset_type"] == "MUTUAL_FUND"
+        if (asset_group == "funds") != is_fund:
+            continue
+        day = row["snapshot_date"]
+        totals[day] = totals.get(day, ZERO) + Decimal(row["market_value_cny"])
+    return [
+        {
+            "snapshot_date": day,
+            "total_market_value_cny": value,
+            "cumulative_pnl_cny": ZERO,
+            "daily_pnl_cny": None,
+            "status": "ok",
+        }
+        for day, value in totals.items()
+    ]
+
+
 def get_industry_allocation(current_rows: list[dict]) -> list[dict]:
+    current_rows = [
+        row for row in current_rows if row.get("asset_type") != "MUTUAL_FUND"
+    ]
     grouped: dict[str, Decimal] = {}
     total = sum((row["market_value_cny"] for row in current_rows), ZERO)
     for row in current_rows:
@@ -644,7 +847,8 @@ def get_snapshot_details(snapshot_date: date | str) -> list[dict]:
     with storage.get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT dps.*, s.market, s.code, s.name, s.currency, s.industry
+            SELECT dps.*, s.market, s.code, s.name, s.currency, s.asset_type,
+                   s.fund_category, s.industry
             FROM daily_position_snapshots dps
             JOIN securities s ON s.id = dps.security_id
             WHERE dps.snapshot_date = ?

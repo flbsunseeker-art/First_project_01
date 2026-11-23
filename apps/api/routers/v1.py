@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel
 
 from apps.api.domain import ledger
 from apps.api.repositories import storage
-from apps.api.services.overview import get_overview_smoke
+from apps.api.services.overview import get_overview_smoke, get_snapshot_overview, valuation_overview
 
 
 router = APIRouter(prefix="/api/v1")
@@ -70,40 +70,14 @@ def _payload_dict(payload: BaseModel) -> dict:
     return payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
 
 
-def _market_allocation(rows: list[dict]) -> list[dict]:
-    grouped: dict[str, Decimal] = {}
-    total = sum((row["market_value_cny"] for row in rows), Decimal("0"))
-    for row in rows:
-        market = row["market"]
-        grouped[market] = grouped.get(market, Decimal("0")) + row["market_value_cny"]
-    return [
-        {
-            "market": market,
-            "market_value_cny": value,
-            "position_pct": value / total * Decimal("100") if total else Decimal("0"),
-        }
-        for market, value in sorted(grouped.items())
-    ]
-
-
 @router.get("/overview", tags=["portfolio"])
-def get_overview() -> dict:
-    current = _current()
-    return _jsonable(
-        {
-            **get_overview_smoke(),
-            "total_market_value_cny": current["total_market_value_cny"],
-            "total_cost_cny": current["total_cost_cny"],
-            "total_pnl_cny": current["total_pnl_cny"],
-            "total_pnl_pct": current["total_pnl_pct"],
-            "today_pnl_cny": current["today_pnl_cny"],
-            "today_pnl_pct": current["today_pnl_pct"],
-            "realized_pnl_cny": current["realized_pnl_cny"],
-            "unrealized_pnl_cny": current["unrealized_pnl_cny"],
-            "missing": current["missing"],
-            "updated_at": current["updated_at"],
-        }
-    )
+def get_overview(snapshot_only: bool = False) -> dict:
+    from apps.api.services import valuation
+
+    current = None if snapshot_only else valuation.latest_current_valuation()
+    if current and not current["missing"]:
+        return _jsonable({**get_overview_smoke(), **valuation_overview(current)})
+    return _jsonable(get_snapshot_overview())
 
 
 @router.get("/holdings", tags=["portfolio"])
@@ -112,32 +86,40 @@ def get_holdings() -> list[dict]:
 
 
 @router.get("/holdings/summary", tags=["portfolio"])
-def get_holdings_summary() -> dict:
-    from apps.api.services import valuation
+def get_holdings_summary(cached_only: bool = False) -> dict:
+    from apps.api.services import exposure, funds, valuation
 
-    current = _current()
+    current = (
+        valuation.latest_current_valuation() or valuation.current_valuation(cached_only=True)
+        if cached_only else _current()
+    )
     rows = current["rows"]
+    price_dates = [row["price_date"] for row in rows if row.get("price_date")]
     return _jsonable(
         {
-            "holdings": rows,
-            "industry": valuation.get_industry_allocation(rows),
-            "market": _market_allocation(rows),
+            "holdings": rows + current["unvalued"],
+            **exposure.breakdown(rows),
+            "investment_plans": funds.list_plans(active_only=True),
+            "missing": current["missing"],
+            "quote_from": min(price_dates, default=None),
+            "quote_through": max(price_dates, default=None),
+            "cached": cached_only,
         }
     )
 
 
 @router.get("/holdings/allocation/industry", tags=["portfolio"])
 def get_industry_allocation() -> list[dict]:
-    from apps.api.services import valuation
+    from apps.api.services import exposure
 
-    current = _current()
-    return _jsonable(valuation.get_industry_allocation(current["rows"]))
+    return _jsonable(exposure.breakdown(_current()["rows"])["industry"])
 
 
 @router.get("/holdings/allocation/market", tags=["portfolio"])
 def get_market_allocation() -> list[dict]:
-    rows = _current()["rows"]
-    return _jsonable(_market_allocation(rows))
+    from apps.api.services import exposure
+
+    return _jsonable(exposure.breakdown(_current()["rows"])["market"])
 
 
 @router.patch("/securities/{security_id}/industry", tags=["portfolio"])
@@ -234,6 +216,20 @@ def get_daily_returns(start_date: date | None = None, end_date: date | None = No
     return _jsonable(valuation.get_daily_returns(start_date, end_date))
 
 
+@router.get("/analytics/performance", tags=["analytics"])
+def get_performance(calendar: bool = False) -> dict:
+    from apps.api.services import performance
+
+    return _jsonable(performance.history(calendar=calendar))
+
+
+@router.get("/analytics/benchmarks", tags=["analytics"])
+def get_benchmark_comparison() -> dict:
+    from apps.api.services import benchmarks, performance
+
+    return _jsonable(benchmarks.get_comparison(performance.history()))
+
+
 @router.get("/analytics/snapshots/{snapshot_date}", tags=["analytics"])
 def get_snapshot(snapshot_date: date) -> list[dict]:
     from apps.api.services import valuation
@@ -242,10 +238,49 @@ def get_snapshot(snapshot_date: date) -> list[dict]:
 
 
 @router.get("/analytics/value-trend", tags=["analytics"])
-def get_value_trend(start_date: date | None = None, end_date: date | None = None) -> list[dict]:
+def get_value_trend(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    asset_group: str = "all",
+    snapshot_only: bool = False,
+) -> list[dict]:
     from apps.api.services import valuation
 
-    valuation.auto_backfill()
+    if not snapshot_only:
+        valuation.auto_backfill()
+    if asset_group in {"stocks", "funds"}:
+        rows = valuation.get_asset_value_trend(asset_group, start_date, end_date)
+        if snapshot_only:
+            return _jsonable(rows)
+        current_day = date.today().isoformat()
+        include_today = (start_date is None or date.today() >= start_date) and (
+            end_date is None or date.today() <= end_date
+        )
+        if include_today:
+            current = _current()
+            value = sum(
+                (
+                    row["market_value_cny"]
+                    for row in current["rows"]
+                    if (row["asset_type"] == "MUTUAL_FUND")
+                    == (asset_group == "funds")
+                ),
+                Decimal("0"),
+            )
+            current_row = {
+                "snapshot_date": current_day,
+                "total_market_value_cny": value,
+                "cumulative_pnl_cny": Decimal("0"),
+                "daily_pnl_cny": None,
+                "status": "live",
+            }
+            if rows and rows[-1]["snapshot_date"] == current_day:
+                rows[-1] = current_row
+            elif value > 0:
+                rows.append(current_row)
+        return _jsonable(rows)
+    if asset_group != "all":
+        raise HTTPException(status_code=400, detail="asset_group 仅支持 all、stocks、funds")
     rows = valuation.get_daily_returns(start_date, end_date)
     return _jsonable(
         [
@@ -261,17 +296,35 @@ def get_value_trend(start_date: date | None = None, end_date: date | None = None
     )
 
 
+@router.get("/data/refresh", tags=["data"])
+def get_market_refresh() -> dict:
+    from apps.api.services import market_refresh
+
+    return _jsonable(market_refresh.status())
+
+
+@router.post("/data/refresh", tags=["data"], status_code=202)
+def post_market_refresh() -> dict:
+    from apps.api.services import market_refresh
+
+    return _jsonable(market_refresh.start())
+
+
 @router.get("/data/status", tags=["data"])
 def get_data_status() -> dict:
     storage.ensure_database()
     with storage.get_connection() as conn:
         latest_snapshot = conn.execute(
             """
-            SELECT snapshot_date, status, error_message, calculated_at
+            SELECT snapshot_date, status, is_final, error_message, calculated_at
             FROM daily_portfolio_snapshots
             ORDER BY snapshot_date DESC LIMIT 1
             """
         ).fetchone()
+        complete_through = conn.execute(
+            """SELECT MAX(snapshot_date) FROM daily_portfolio_snapshots
+               WHERE status = 'ok' AND is_final = 1"""
+        ).fetchone()[0]
         latest_sync = conn.execute(
             """
             SELECT started_at, finished_at, start_date, end_date, status, details
@@ -283,6 +336,7 @@ def get_data_status() -> dict:
         "schema_version": storage.get_setting("schema_version"),
         "database": str(storage.DB_FILE),
         "latest_snapshot": dict(latest_snapshot) if latest_snapshot else None,
+        "complete_snapshot_through": complete_through,
         "latest_sync": dict(latest_sync) if latest_sync else None,
     }
 
@@ -329,3 +383,18 @@ def get_html_report() -> FileResponse:
 
     path = Path(report.generate_report())
     return FileResponse(path, media_type="text/html", filename=path.name)
+
+
+@router.get("/research/weekly", include_in_schema=False)
+def weekly_review() -> RedirectResponse:
+    return RedirectResponse("/api/v1/research/diagnosis")
+
+
+@router.get("/research/diagnosis", tags=["research"])
+def get_diagnosis(cutoff: date | None = None) -> dict:
+    from apps.api.services import diagnosis
+
+    try:
+        return diagnosis.read_report(cutoff)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

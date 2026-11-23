@@ -6,6 +6,8 @@ venv/
 
 # Local environment and editor files
 .env
+.env.*
+!.env.example
 .DS_Store
 .idea/
 .vscode/
@@ -15,8 +17,11 @@ portfolio.json
 /data/
 /backups/
 *.db
+*.db-*
 *.sqlite
+*.sqlite-*
 *.sqlite3
+*.sqlite3-*
 
 # Frontend dependencies and build outputs
 node_modules/
@@ -24,6 +29,7 @@ node_modules/
 tsconfig.tsbuildinfo
 apps/web/node_modules/
 apps/web/.next/
+apps/web/.next-dev/
 apps/web/out/
 apps/web/tsconfig.tsbuildinfo
 

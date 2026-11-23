@@ -2,7 +2,7 @@
 
 import { useState, type CSSProperties } from "react";
 
-import { formatMoney, formatPercent, pnlClass, toNumber } from "../lib/format";
+import { formatAxisNumber, formatMoney, formatPercent, pnlClass, toNumber } from "../lib/format";
 import type { Allocation, DailyReturn } from "../lib/types";
 
 const TREND_TICK_STEP = 10000;
@@ -13,8 +13,7 @@ type PlotPoint = {
 };
 
 function formatWan(value: number) {
-  const wan = value / 10000;
-  return `${Number.isInteger(wan) ? wan.toFixed(0) : wan.toFixed(1)}万`;
+  return `${formatAxisNumber(value / 10_000)}万`;
 }
 
 function createSmoothPath(points: PlotPoint[]) {
@@ -46,7 +45,15 @@ function createSmoothPath(points: PlotPoint[]) {
   }, "");
 }
 
-export function TrendLineChart({ rows }: Readonly<{ rows: DailyReturn[] }>) {
+export function TrendLineChart({
+  rows,
+  series = "stocks",
+  seriesLabel = "总市值",
+}: Readonly<{
+  rows: DailyReturn[];
+  series?: "stocks" | "funds";
+  seriesLabel?: string;
+}>) {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const points = rows
     .map((row) => ({
@@ -55,8 +62,18 @@ export function TrendLineChart({ rows }: Readonly<{ rows: DailyReturn[] }>) {
     }))
     .filter((row): row is { date: string; value: number } => row.value !== null);
 
-  if (points.length < 2) {
+  if (!points.length) {
     return <div className="chart-empty">暂无足够趋势数据</div>;
+  }
+
+  if (points.length === 1) {
+    return (
+      <div className="trend-single-point">
+        <span>{points[0].date}</span>
+        <strong>{formatMoney(points[0].value)} CNY</strong>
+        <small>已建立可信基线，后续净值日将逐步形成趋势</small>
+      </div>
+    );
   }
 
   const width = 640;
@@ -82,6 +99,8 @@ export function TrendLineChart({ rows }: Readonly<{ rows: DailyReturn[] }>) {
   const latest = points[points.length - 1];
   const xLabels = [points[0], points[Math.floor(points.length / 2)], latest];
   const activePoint = activeIndex === null ? null : plotted[activeIndex];
+  const strokeId = `trendStroke-${series}`;
+  const areaId = `trendArea-${series}`;
   const tooltipStyle = activePoint
     ? ({
         "--tooltip-x": `${(activePoint.x / width) * 100}%`,
@@ -98,15 +117,15 @@ export function TrendLineChart({ rows }: Readonly<{ rows: DailyReturn[] }>) {
   return (
     <div className="trend-chart">
       <div className="trend-chart-figure" onMouseLeave={() => setActiveIndex(null)}>
-        <svg aria-label="总市值变化趋势" viewBox={`0 0 ${width} ${height}`} role="img">
+        <svg aria-label={`${seriesLabel}变化趋势`} viewBox={`0 0 ${width} ${height}`} role="img">
           <defs>
-            <linearGradient id="trendStroke" x1="0%" x2="100%" y1="0%" y2="0%">
-              <stop offset="0%" stopColor="var(--accent-cyan)" />
-              <stop offset="100%" stopColor="var(--accent-blue)" />
+            <linearGradient id={strokeId} x1="0%" x2="100%" y1="0%" y2="0%">
+              <stop offset="0%" stopColor={series === "funds" ? "#f7c948" : "var(--accent-cyan)"} />
+              <stop offset="100%" stopColor={series === "funds" ? "#ff8a65" : "var(--accent-blue)"} />
             </linearGradient>
-            <linearGradient id="trendArea" x1="0%" x2="0%" y1="0%" y2="100%">
-              <stop offset="0%" stopColor="rgba(49, 230, 210, 0.32)" />
-              <stop offset="100%" stopColor="rgba(49, 230, 210, 0)" />
+            <linearGradient id={areaId} x1="0%" x2="0%" y1="0%" y2="100%">
+              <stop offset="0%" stopColor={series === "funds" ? "rgba(247, 201, 72, 0.3)" : "rgba(49, 230, 210, 0.32)"} />
+              <stop offset="100%" stopColor={series === "funds" ? "rgba(247, 201, 72, 0)" : "rgba(49, 230, 210, 0)"} />
             </linearGradient>
           </defs>
           {ticks.map((tick) => {
@@ -120,8 +139,8 @@ export function TrendLineChart({ rows }: Readonly<{ rows: DailyReturn[] }>) {
               </g>
             );
           })}
-          <path className="trend-area" d={area} />
-          <path className="trend-path" d={path} />
+          <path className="trend-area" d={area} style={{ fill: `url(#${areaId})` }} />
+          <path className="trend-path" d={path} style={{ stroke: `url(#${strokeId})` }} />
           {plotted.map((point, index) => (
             <g className={index === activeIndex ? "trend-point active" : "trend-point"} key={point.date}>
               <circle cx={point.x} cy={point.y} r="10">
@@ -197,8 +216,10 @@ export function AllocationPie({
     return <div className="chart-empty">暂无分布数据</div>;
   }
 
-  const colors = ["#31e6d2", "#56b6ff", "#ff5f57", "#f7c948", "#9ddcff", "#22c878"];
-  const total = segments.reduce((sum, segment) => sum + segment.value, 0);
+  const colors = labelKey === "market"
+    ? ["#57d6c5", "#77a8f5", "#ba9aff", "#edbe73"]
+    : ["#57d6c5", "#77a8f5", "#b69af3", "#edbe73", "#e99197", "#81bfd5",
+      "#93c990", "#d89bcf", "#9baaec", "#d8ad87", "#73b3a9", "#a6b87a"];
   const active = segments[activeIndex] ?? segments[0];
   const preview = previewIndex === null ? active : (segments[previewIndex] ?? active);
   let cursor = 0;
@@ -209,7 +230,9 @@ export function AllocationPie({
   });
 
   return (
-    <div className="allocation-donut">
+    <div className="allocation-donut" data-allocation={labelKey} onBlur={(event) => {
+      if (!event.currentTarget.contains(event.relatedTarget)) setPreviewIndex(null);
+    }}>
       <div className="donut-visual" onMouseLeave={() => setPreviewIndex(null)}>
         <svg aria-label="分布环形图" className="donut-svg" viewBox="0 0 100 100">
           {chartSegments.map((segment, index) => (
@@ -224,6 +247,7 @@ export function AllocationPie({
               onFocus={() => setPreviewIndex(index)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
                   setActiveIndex(index);
                 }
               }}
@@ -256,8 +280,7 @@ export function AllocationPie({
             onMouseEnter={() => setPreviewIndex(index)}
             type="button"
           >
-            <i style={{ background: colors[index % colors.length] }} />
-            <span>{index + 1}</span>
+            <i style={{ background: colors[index % colors.length] }} aria-hidden="true" />
             <strong>{segment.label}</strong>
             <b>{formatMoney(segment.value)}</b>
             <em>{formatPercent(segment.pct)}</em>
@@ -268,16 +291,21 @@ export function AllocationPie({
   );
 }
 
-export function TrendDetailList({ rows }: Readonly<{ rows: DailyReturn[] }>) {
+export function TrendDetailList({
+  rows,
+  showChange = true,
+}: Readonly<{ rows: DailyReturn[]; showChange?: boolean }>) {
   return (
     <div className="trend-detail-list">
       {rows.map((row) => (
         <div key={row.snapshot_date}>
           <span>{row.snapshot_date}</span>
           <strong>{formatMoney(row.total_market_value_cny)}</strong>
-          <b className={pnlClass(row.daily_pnl_cny)}>
-            {formatMoney(row.daily_pnl_cny, { signed: true })}
-          </b>
+          {showChange ? (
+            <b className={pnlClass(row.daily_pnl_cny)}>
+              {formatMoney(row.daily_pnl_cny, { signed: true })}
+            </b>
+          ) : null}
         </div>
       ))}
     </div>

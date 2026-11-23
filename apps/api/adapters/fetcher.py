@@ -3,8 +3,12 @@
 A 股、港股和美股实时行情通过新浪接口获取；历史行情由 market_data 适配层处理。
 """
 
-import requests
 import re
+from datetime import date, datetime
+
+import requests
+
+from apps.api.core.market_time import NEW_YORK, SHANGHAI
 
 # 通用请求头
 _HEADERS = {
@@ -34,16 +38,14 @@ def get_a_share_price(code: str) -> dict | None:
         name = fields[0]
         current_price = float(fields[3]) if fields[3] else None
         prev_close = float(fields[2]) if fields[2] else None
-        # 盘前/已收盘：当前价为 0 时用昨收价
-        if not current_price or current_price == 0:
-            current_price = prev_close
-        if not current_price:
+        if not current_price or current_price <= 0:
             return None
         change_pct = ((current_price - prev_close) / prev_close * 100) if prev_close else 0
         return {
             "price": current_price,
             "change_pct": round(change_pct, 2),
             "name": name,
+            "price_date": date.fromisoformat(fields[30]).isoformat(),
         }
     except Exception as e:
         print(f"获取 A 股 {code} 失败: {e}")
@@ -52,7 +54,7 @@ def get_a_share_price(code: str) -> dict | None:
 
 def get_hk_stock_price(code: str) -> dict | None:
     """获取港股最新价格（通过新浪财经接口）"""
-    url = f"https://hq.sinajs.cn/list=hk{code}"
+    url = f"https://hq.sinajs.cn/list=hk{code.zfill(5)}"
     try:
         resp = _session.get(url, timeout=10)
         resp.encoding = "gbk"
@@ -61,21 +63,20 @@ def get_hk_stock_price(code: str) -> dict | None:
         if not match:
             return None
         fields = match.group(1).split(",")
-        if len(fields) < 10:
+        if len(fields) < 19:
             return None
         # 港股格式: 名称,开盘价,昨收,最高,最低,最新价,...
         name = fields[1] if len(fields) > 1 else code
         current_price = float(fields[6]) if fields[6] else None
         prev_close = float(fields[3]) if fields[3] else None
-        if not current_price or current_price == 0:
-            current_price = prev_close
-        if not current_price:
+        if not current_price or current_price <= 0:
             return None
         change_pct = ((current_price - prev_close) / prev_close * 100) if prev_close else 0
         return {
             "price": current_price,
             "change_pct": round(change_pct, 2),
             "name": name,
+            "price_date": date.fromisoformat(fields[17].replace("/", "-")).isoformat(),
         }
     except Exception as e:
         print(f"获取港股 {code} 失败: {e}")
@@ -99,15 +100,15 @@ def get_us_stock_price(code: str) -> dict | None:
         name = fields[0] if fields[0] else code
         current_price = float(fields[1]) if fields[1] else None
         prev_close = float(fields[26]) if len(fields) > 26 and fields[26] else None
-        if not current_price or current_price == 0:
-            current_price = prev_close
-        if not current_price:
+        if not current_price or current_price <= 0:
             return None
+        market_time = datetime.fromisoformat(fields[3]).replace(tzinfo=SHANGHAI).astimezone(NEW_YORK)
         change_pct = ((current_price - prev_close) / prev_close * 100) if prev_close else 0
         return {
             "price": current_price,
             "change_pct": round(change_pct, 2),
             "name": name,
+            "price_date": market_time.date().isoformat(),
         }
     except Exception as e:
         print(f"获取美股 {code} 失败: {e}")

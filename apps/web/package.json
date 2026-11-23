@@ -1,6 +1,6 @@
 {
   "name": "stockpilot-web",
-  "version": "0.1.0",
+  "version": "1.5.0",
   "private": true,
   "scripts": {
     "dev": "NEXT_TELEMETRY_DISABLED=1 NEXT_TEST_WASM_DIR=node_modules/@next/swc-wasm-nodejs next dev",

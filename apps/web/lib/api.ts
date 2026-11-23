@@ -6,10 +6,11 @@ export type ApiError = {
   message: string;
 };
 
-export async function apiGet<T>(path: string): Promise<T> {
+export async function apiGet<T>(path: string, signal = AbortSignal.timeout(12_000)): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: { Accept: "application/json" },
     cache: "no-store",
+    signal,
   });
   if (!response.ok) {
     throw {

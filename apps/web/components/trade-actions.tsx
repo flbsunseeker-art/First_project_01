@@ -9,10 +9,11 @@ import { Button } from "./ui";
 const reasons = ["行业趋势判断", "个股基本面", "价格 / 估值判断", "仓位 / 情绪管理"];
 
 export function TradeForm({ securities }: Readonly<{ securities: Security[] }>) {
+  type TradableMarket = Exclude<Security["market"], "FUND">;
   const [status, setStatus] = useState("等待录入");
   const [mode, setMode] = useState<"existing" | "new">("existing");
-  const [market, setMarket] = useState<Security["market"]>("A");
-  const currencyByMarket: Record<Security["market"], Security["currency"]> = {
+  const [market, setMarket] = useState<TradableMarket>("A");
+  const currencyByMarket: Record<TradableMarket, Security["currency"]> = {
     A: "CNY",
     HK: "HKD",
     US: "USD",
@@ -72,7 +73,7 @@ export function TradeForm({ securities }: Readonly<{ securities: Security[] }>) 
           <span>已有股票</span>
           <select name="security_id" required>
             <option value="">选择当前股票</option>
-            {securities.map((security) => (
+            {securities.filter((security) => security.market !== "FUND").map((security) => (
               <option key={security.id} value={security.id}>
                 {security.market} · {security.code} · {security.name}
               </option>
@@ -85,7 +86,7 @@ export function TradeForm({ securities }: Readonly<{ securities: Security[] }>) 
             <span>市场</span>
             <select
               name="market"
-              onChange={(event) => setMarket(event.target.value as Security["market"])}
+              onChange={(event) => setMarket(event.target.value as TradableMarket)}
               value={market}
             >
               <option value="A">A 股</option>
